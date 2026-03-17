@@ -199,7 +199,7 @@ class FrenchTypographyRules:
         },
         {
             "id": "typo_pas_espace_apres_ponctuation",
-            "pattern": r"[,.](?=[^\s\d\n»"')\]…\-])",
+            "pattern": r"[,.](?=[^\s\d\n\u00bb\u201d\u2019)\]…\-])",
             "category": "typographie",
             "severity": "error",
             "message": "Espace manquante après la ponctuation",
