@@ -1,0 +1,54 @@
+# Configuration de l'outil d'édition professionnelle
+# Copiez ce fichier et adaptez-le à chaque projet
+
+# --- Langue et variante ---
+langue: "français"
+variante: "france"           # france | québec | belgique | suisse
+
+# --- Genre de l'ouvrage ---
+# roman | essai | documentaire | jeunesse | technique | recueil | poésie
+genre: "roman"
+
+# --- Niveau d'intervention ---
+# leger   : fautes graves uniquement, peu de suggestions de style
+# standard: équilibre fautes + style + homogénéisation
+# approfondi: analyse complète tous axes confondus
+niveau: "standard"
+
+# --- Temps narratif dominant (roman) ---
+# passe | present | mixte
+temps_narratif: "passe"
+
+# --- Noms propres connus (évite les faux positifs) ---
+noms_propres:
+  - "Marthe"
+  - "Le Havre"
+  # Ajoutez les personnages, lieux, termes spécifiques ici
+
+# --- Termes techniques ou jargon à préserver ---
+termes_a_ignorer: []
+
+# --- Règles maison de l'éditeur ---
+regles_maison:
+  guillemets: "français"          # français (« ») | anglais ("")
+  tirets_dialogue: "cadratin"     # cadratin (—) | demi-cadratin (–)
+  numerotation_chapitres: "chiffres_romains"  # chiffres_romains | arabes | lettres | aucun
+  majuscule_apres_deux_points: false
+
+# --- Analyses à activer/désactiver ---
+analyses:
+  orthographe_grammaire: true
+  typographie: true
+  style_lisibilite: true
+  homogeneisation: true
+  structure_narrative: true
+  maquette: true               # utile pour livres déjà maquettés
+
+# --- Performance ---
+taille_chunk_tokens: 2000      # taille des chunks envoyés au LLM
+chevauchement_tokens: 200      # chevauchement entre chunks
+max_requetes_paralleles: 3     # requêtes API simultanées
+cache: true                    # met en cache les analyses pour éviter les re-traitements
+
+# --- Modèle Claude ---
+modele: "claude-opus-4-6"      # claude-opus-4-6 | claude-sonnet-4-6 (plus rapide, moins précis)
