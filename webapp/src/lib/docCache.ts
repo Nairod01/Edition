@@ -6,8 +6,8 @@
  */
 import type { AnalysisResult } from './types'
 
-const DOC_PREFIX = 'editoria_doc_v1_'
-const LAST_KEY = 'editoria_last_v1'
+const DOC_PREFIX = 'editoria_doc_v2_'
+const LAST_KEY = 'editoria_last_v2'
 
 export interface CachedDoc {
   result: AnalysisResult
