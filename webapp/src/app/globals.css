@@ -58,6 +58,17 @@
   @apply bg-gray-50 font-semibold;
 }
 
+/* ── Couche texte PDF : rendre le texte transparent pour éviter le doublon ── */
+/* Le canvas PDF affiche déjà le texte ; la couche texte sert uniquement aux  */
+/* surlignages de corrections. On cache le texte brut tout en gardant les     */
+/* fonds colorés des <mark> visibles.                                          */
+.react-pdf__Page__textContent span {
+  color: transparent;
+}
+.react-pdf__Page__textContent mark {
+  color: transparent;
+}
+
 /* Scrollbars personnalisées */
 ::-webkit-scrollbar {
   width: 6px;
