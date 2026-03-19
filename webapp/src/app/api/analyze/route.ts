@@ -164,6 +164,7 @@ export async function POST(request: NextRequest) {
           corrections,
           extractedText,
           formattedHtml,
+          pageOffsets: pageOffsets.length > 1 ? pageOffsets : undefined,
           language: detectLanguage(extractedText),
           charCount: extractedText.length,
           wordCount,

@@ -24,6 +24,8 @@ export interface AnalysisResult {
   extractedText: string
   /** HTML mis en forme généré par mammoth (DOCX uniquement) */
   formattedHtml?: string
+  /** Offset de caractère du début de chaque page dans extractedText (PDF uniquement) */
+  pageOffsets?: number[]
   language: 'fr' | 'en' | 'mixed'
   charCount: number
   wordCount: number

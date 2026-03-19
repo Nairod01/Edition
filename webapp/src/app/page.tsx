@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { UploadZone } from '@/components/UploadZone'
 import { AnnotatedText } from '@/components/AnnotatedText'
 import { CorrectionPanel } from '@/components/CorrectionPanel'
@@ -16,6 +16,24 @@ const CATEGORY_COLORS: Record<string, string> = {
   style: 'text-green-600',
 }
 
+const STORAGE_KEY = 'editoria_session_v1'
+
+interface SavedSession {
+  hash: string
+  doneIds: string[]
+  selectedId: string | null
+}
+
+/** Empreinte légère du document pour identifier une session */
+function docHash(text: string): string {
+  const sample = text.slice(0, 300) + text.slice(-300) + text.length
+  let h = 0
+  for (let i = 0; i < sample.length; i++) {
+    h = (Math.imul(31, h) + sample.charCodeAt(i)) | 0
+  }
+  return Math.abs(h).toString(36)
+}
+
 export default function Home() {
   const [phase, setPhase] = useState<Phase>('upload')
   const [status, setStatus] = useState('')
@@ -24,63 +42,123 @@ export default function Home() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [errorMsg, setErrorMsg] = useState('')
   const [filename, setFilename] = useState('')
+  const [doneIds, setDoneIds] = useState<Set<string>>(new Set())
+  const [sessionRestored, setSessionRestored] = useState(false)
 
-  const handleFile = useCallback(async (file: File) => {
-    setFilename(file.name)
-    setPhase('loading')
-    setProgress(5)
-    setStatus('Préparation…')
-    setResult(null)
-    setSelectedId(null)
+  // Référence sur le hash courant pour éviter une closure périmée dans l'effet
+  const currentHashRef = useRef<string>('')
 
+  /** Tente de restaurer une session sauvegardée pour ce document */
+  const tryRestoreSession = useCallback((extractedText: string) => {
     try {
-      const formData = new FormData()
-      formData.append('file', file)
-
-      const response = await fetch('/api/analyze', { method: 'POST', body: formData })
-
-      if (!response.body) throw new Error('Aucune réponse du serveur.')
-
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          try {
-            const event: StreamEvent = JSON.parse(line.slice(6))
-
-            if (event.type === 'progress') {
-              setStatus(event.message)
-              setProgress(event.percent)
-            } else if (event.type === 'result') {
-              setResult(event.data)
-              setProgress(100)
-              setPhase('results')
-            } else if (event.type === 'error') {
-              setErrorMsg(event.message)
-              setPhase('error')
-            }
-          } catch {
-            // Ligne partielle ou non-JSON, ignorer
-          }
-        }
-      }
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Erreur réseau inattendue.')
-      setPhase('error')
+      const raw = localStorage.getItem(STORAGE_KEY)
+      if (!raw) return false
+      const saved: SavedSession = JSON.parse(raw)
+      if (saved.hash !== docHash(extractedText)) return false
+      setDoneIds(new Set(saved.doneIds))
+      setSelectedId(saved.selectedId)
+      return true
+    } catch {
+      return false
     }
   }, [])
 
-  // Synchroniser la sélection dans le texte et dans le panel
+  /** Sauvegarde la session courante dans le localStorage */
+  const saveSession = useCallback(
+    (doneSet: Set<string>, selId: string | null) => {
+      if (!currentHashRef.current) return
+      try {
+        const session: SavedSession = {
+          hash: currentHashRef.current,
+          doneIds: Array.from(doneSet),
+          selectedId: selId,
+        }
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(session))
+      } catch {
+        // localStorage peut être indisponible (navigateur privé, quota…)
+      }
+    },
+    []
+  )
+
+  // Sauvegarder à chaque changement de doneIds ou selectedId
+  useEffect(() => {
+    if (phase === 'results') saveSession(doneIds, selectedId)
+  }, [doneIds, selectedId, phase, saveSession])
+
+  const handleToggleDone = useCallback((id: string) => {
+    setDoneIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const handleFile = useCallback(
+    async (file: File) => {
+      setFilename(file.name)
+      setPhase('loading')
+      setProgress(5)
+      setStatus('Préparation…')
+      setResult(null)
+      setSelectedId(null)
+      setDoneIds(new Set())
+      setSessionRestored(false)
+
+      try {
+        const formData = new FormData()
+        formData.append('file', file)
+
+        const response = await fetch('/api/analyze', { method: 'POST', body: formData })
+
+        if (!response.body) throw new Error('Aucune réponse du serveur.')
+
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() ?? ''
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            try {
+              const event: StreamEvent = JSON.parse(line.slice(6))
+
+              if (event.type === 'progress') {
+                setStatus(event.message)
+                setProgress(event.percent)
+              } else if (event.type === 'result') {
+                const r = event.data
+                currentHashRef.current = docHash(r.extractedText)
+                const restored = tryRestoreSession(r.extractedText)
+                setSessionRestored(restored)
+                setResult(r)
+                setProgress(100)
+                setPhase('results')
+              } else if (event.type === 'error') {
+                setErrorMsg(event.message)
+                setPhase('error')
+              }
+            } catch {
+              // Ligne partielle ou non-JSON, ignorer
+            }
+          }
+        }
+      } catch (err) {
+        setErrorMsg(err instanceof Error ? err.message : 'Erreur réseau inattendue.')
+        setPhase('error')
+      }
+    },
+    [tryRestoreSession]
+  )
+
   const handleSelect = useCallback((id: string) => {
     setSelectedId((prev) => (prev === id ? null : id))
   }, [])
@@ -93,6 +171,9 @@ export default function Home() {
     setStatus('')
     setErrorMsg('')
     setFilename('')
+    setDoneIds(new Set())
+    setSessionRestored(false)
+    currentHashRef.current = ''
   }, [])
 
   return (
@@ -107,7 +188,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Légende catégories */}
         <div className="hidden md:flex items-center gap-4">
           {[
             { key: 'orthographe', dot: 'bg-red-400', label: 'Orthographe' },
@@ -136,13 +216,10 @@ export default function Home() {
       {phase === 'upload' && (
         <main className="flex-1 flex flex-col items-center justify-center p-8 max-w-2xl mx-auto w-full">
           <div className="text-center mb-8">
-            <h2 className="text-3xl font-bold text-gray-900 mb-3">
-              Corrigez votre document
-            </h2>
+            <h2 className="text-3xl font-bold text-gray-900 mb-3">Corrigez votre document</h2>
             <p className="text-gray-500 text-base">
-              Déposez un fichier Word ou PDF pour obtenir une analyse complète :
-              orthographe, grammaire, typographie et style — avec la règle pour chaque
-              correction.
+              Déposez un fichier Word ou PDF pour obtenir une analyse complète : orthographe,
+              grammaire, typographie et style — avec la règle pour chaque correction.
             </p>
           </div>
 
@@ -169,8 +246,8 @@ export default function Home() {
           </div>
 
           <p className="mt-6 text-xs text-gray-400 text-center">
-            🔒 Votre document est traité à la volée et n&apos;est jamais stocké.
-            Nécessite une clé API Anthropic (variable ANTHROPIC_API_KEY).
+            🔒 Votre document est traité à la volée et n&apos;est jamais stocké. Nécessite une clé
+            API Anthropic (variable ANTHROPIC_API_KEY).
           </p>
         </main>
       )}
@@ -180,7 +257,6 @@ export default function Home() {
         <main className="flex-1 flex flex-col items-center justify-center p-8">
           <div className="w-full max-w-md">
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 text-center">
-              {/* Spinner */}
               <div className="relative w-16 h-16 mx-auto mb-6">
                 <div className="absolute inset-0 rounded-full border-4 border-gray-100" />
                 <div className="absolute inset-0 rounded-full border-4 border-t-blue-500 animate-spin" />
@@ -189,7 +265,6 @@ export default function Home() {
               <h3 className="font-semibold text-gray-900 mb-1">{filename}</h3>
               <p className="text-gray-500 text-sm mb-6">{status}</p>
 
-              {/* Barre de progression */}
               <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
                 <div
                   className="h-full rounded-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-500"
@@ -237,14 +312,17 @@ export default function Home() {
             {(['orthographe', 'grammaire', 'typographie', 'style'] as const).map((cat) => {
               const count = result.corrections.filter((c) => c.category === cat).length
               return count > 0 ? (
-                <span
-                  key={cat}
-                  className={`text-sm font-medium capitalize ${CATEGORY_COLORS[cat]}`}
-                >
+                <span key={cat} className={`text-sm font-medium capitalize ${CATEGORY_COLORS[cat]}`}>
                   {count} {cat}
                 </span>
               ) : null
             })}
+            {/* Indicateur session restaurée */}
+            {sessionRestored && (
+              <span className="text-xs text-green-600 font-medium ml-auto flex items-center gap-1">
+                <span>↩</span> Session restaurée
+              </span>
+            )}
           </div>
 
           {/* Split view */}
@@ -254,6 +332,7 @@ export default function Home() {
               <AnnotatedText
                 text={result.extractedText}
                 formattedHtml={result.formattedHtml}
+                pageOffsets={result.pageOffsets}
                 corrections={result.corrections}
                 selectedId={selectedId}
                 onSelect={handleSelect}
@@ -266,6 +345,8 @@ export default function Home() {
                 corrections={result.corrections}
                 selectedId={selectedId}
                 onSelect={handleSelect}
+                doneIds={doneIds}
+                onToggleDone={handleToggleDone}
               />
             </aside>
           </div>

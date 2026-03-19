@@ -28,15 +28,72 @@ const CATEGORY_STYLES: Record<string, { bg: string; border: string; hover: strin
   },
 }
 
+type EnrichedSegment =
+  | { kind: 'text'; text: string; correctionId: string | null }
+  | { kind: 'pageBreak'; pageNum: number }
+
+/** Intercale des marqueurs de saut de page dans la liste de segments */
+function buildSegmentsWithPageBreaks(
+  baseSegments: { text: string; correctionId: string | null }[],
+  pageOffsets: number[]
+): EnrichedSegment[] {
+  // pageOffsets[0] === 0 (début du doc), on insère un séparateur pour pages 2, 3, …
+  const breaks = pageOffsets
+    .slice(1)
+    .map((off, i) => ({ off, pageNum: i + 2 }))
+    .sort((a, b) => a.off - b.off)
+
+  if (breaks.length === 0) {
+    return baseSegments.map((s) => ({ kind: 'text', ...s }))
+  }
+
+  const result: EnrichedSegment[] = []
+  let charPos = 0
+  let breakIdx = 0
+
+  for (const seg of baseSegments) {
+    let text = seg.text
+    let localStart = charPos
+
+    // Consommer tous les sauts de page tombant dans ce segment
+    while (breakIdx < breaks.length) {
+      const { off, pageNum } = breaks[breakIdx]
+      if (off >= localStart + text.length) break
+
+      const cutAt = off - localStart
+      if (cutAt > 0) {
+        result.push({ kind: 'text', text: text.slice(0, cutAt), correctionId: seg.correctionId })
+      }
+      result.push({ kind: 'pageBreak', pageNum })
+      text = text.slice(cutAt)
+      localStart = off
+      breakIdx++
+    }
+
+    if (text) result.push({ kind: 'text', text, correctionId: seg.correctionId })
+    charPos += seg.text.length
+  }
+
+  return result
+}
+
 interface Props {
   text: string
   formattedHtml?: string
+  pageOffsets?: number[]
   corrections: Correction[]
   selectedId: string | null
   onSelect: (id: string) => void
 }
 
-export function AnnotatedText({ text, formattedHtml, corrections, selectedId, onSelect }: Props) {
+export function AnnotatedText({
+  text,
+  formattedHtml,
+  pageOffsets,
+  corrections,
+  selectedId,
+  onSelect,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
 
   // ── Mode HTML (DOCX avec mise en forme) ──────────────────────────────────
@@ -45,7 +102,6 @@ export function AnnotatedText({ text, formattedHtml, corrections, selectedId, on
     return injectHighlightsIntoHtml(formattedHtml, corrections)
   }, [formattedHtml, corrections])
 
-  // Mettre à jour la sélection via manipulation DOM (sans re-render)
   useEffect(() => {
     if (!annotatedHtml || !containerRef.current) return
     containerRef.current
@@ -77,23 +133,45 @@ export function AnnotatedText({ text, formattedHtml, corrections, selectedId, on
     )
   }
 
-  // ── Mode texte brut (PDF ou DOCX sans HTML) ───────────────────────────────
+  // ── Mode texte brut (PDF) ─────────────────────────────────────────────────
   const { segments } = useMemo(() => annotateText(text, corrections), [text, corrections])
   const correctionMap = useMemo(
     () => new Map(corrections.map((c) => [c.id, c])),
     [corrections]
   )
+  const enriched = useMemo(
+    () => buildSegmentsWithPageBreaks(segments, pageOffsets ?? []),
+    [segments, pageOffsets]
+  )
 
   useEffect(() => {
     if (selectedId) {
-      const el = document.getElementById(`ann-${selectedId}`)
-      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      document.getElementById(`ann-${selectedId}`)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      })
     }
   }, [selectedId])
 
   return (
     <div className="font-serif text-gray-900 leading-relaxed text-base whitespace-pre-wrap">
-      {segments.map((seg, i) => {
+      {enriched.map((seg, i) => {
+        if (seg.kind === 'pageBreak') {
+          return (
+            <div
+              key={`pb-${i}`}
+              className="flex items-center gap-3 my-6 select-none"
+              aria-label={`Début page ${seg.pageNum}`}
+            >
+              <div className="flex-1 h-px bg-gray-200" />
+              <span className="text-xs text-gray-400 font-medium px-2 py-0.5 rounded border border-gray-200 bg-white">
+                page {seg.pageNum}
+              </span>
+              <div className="flex-1 h-px bg-gray-200" />
+            </div>
+          )
+        }
+
         if (!seg.correctionId) {
           return <span key={i}>{seg.text}</span>
         }

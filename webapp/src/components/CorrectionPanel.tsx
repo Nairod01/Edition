@@ -43,10 +43,19 @@ interface Props {
   corrections: Correction[]
   selectedId: string | null
   onSelect: (id: string) => void
+  doneIds: Set<string>
+  onToggleDone: (id: string) => void
 }
 
-export function CorrectionPanel({ corrections, selectedId, onSelect }: Props) {
+export function CorrectionPanel({
+  corrections,
+  selectedId,
+  onSelect,
+  doneIds,
+  onToggleDone,
+}: Props) {
   const [filter, setFilter] = useState<Category | 'all'>('all')
+  const [hideDone, setHideDone] = useState(false)
 
   const counts = {
     orthographe: corrections.filter((c) => c.category === 'orthographe').length,
@@ -55,10 +64,13 @@ export function CorrectionPanel({ corrections, selectedId, onSelect }: Props) {
     style: corrections.filter((c) => c.category === 'style').length,
   }
 
-  const filtered =
-    filter === 'all' ? corrections : corrections.filter((c) => c.category === filter)
+  const doneCount = doneIds.size
+  const remaining = corrections.length - doneCount
 
-  // Scroller vers la correction sélectionnée dans le panel
+  const filtered = corrections
+    .filter((c) => filter === 'all' || c.category === filter)
+    .filter((c) => !hideDone || !doneIds.has(c.id))
+
   useEffect(() => {
     if (selectedId) {
       document.getElementById(`correction-${selectedId}`)?.scrollIntoView({
@@ -72,10 +84,21 @@ export function CorrectionPanel({ corrections, selectedId, onSelect }: Props) {
     <div className="flex flex-col h-full">
       {/* En-tête */}
       <div className="px-4 py-3 border-b border-gray-200 bg-white sticky top-0 z-10">
-        <h2 className="font-semibold text-gray-900 text-sm mb-2">
-          {corrections.length} correction{corrections.length > 1 ? 's' : ''} détectée
-          {corrections.length > 1 ? 's' : ''}
-        </h2>
+        {/* Compteurs */}
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="font-semibold text-gray-900 text-sm">
+            {corrections.length} correction{corrections.length > 1 ? 's' : ''}
+          </h2>
+          {doneCount > 0 && (
+            <span className="text-xs text-green-600 font-medium flex items-center gap-1">
+              <CheckIcon className="w-3.5 h-3.5" />
+              {doneCount} faite{doneCount > 1 ? 's' : ''}
+              {remaining > 0 && (
+                <span className="text-gray-400 font-normal">· {remaining} restante{remaining > 1 ? 's' : ''}</span>
+              )}
+            </span>
+          )}
+        </div>
 
         {/* Légende */}
         <div className="flex flex-wrap gap-2 mb-3">
@@ -109,6 +132,13 @@ export function CorrectionPanel({ corrections, selectedId, onSelect }: Props) {
                 />
               ) : null
           )}
+          {doneCount > 0 && (
+            <FilterBtn
+              label={hideDone ? `Afficher faites (${doneCount})` : `Masquer faites`}
+              active={hideDone}
+              onClick={() => setHideDone((v) => !v)}
+            />
+          )}
         </div>
       </div>
 
@@ -116,13 +146,16 @@ export function CorrectionPanel({ corrections, selectedId, onSelect }: Props) {
       <div className="flex-1 overflow-y-auto">
         {filtered.length === 0 ? (
           <div className="p-8 text-center text-gray-400 text-sm">
-            Aucune correction dans cette catégorie
+            {hideDone && doneCount > 0
+              ? 'Toutes les corrections visibles sont faites ✓'
+              : 'Aucune correction dans cette catégorie'}
           </div>
         ) : (
           filtered.map((correction) => {
             const cfg = CATEGORY_CONFIG[correction.category]
             const sev = SEVERITY_LABELS[correction.severity]
             const isSelected = correction.id === selectedId
+            const isDone = doneIds.has(correction.id)
 
             return (
               <div
@@ -132,27 +165,40 @@ export function CorrectionPanel({ corrections, selectedId, onSelect }: Props) {
                   px-4 py-3 border-b border-gray-100 cursor-pointer
                   transition-colors duration-100 border-l-4
                   ${cfg.border}
+                  ${isDone ? 'opacity-50' : ''}
                   ${isSelected ? 'bg-gray-50' : 'hover:bg-gray-50/70'}
                 `}
                 onClick={() => onSelect(correction.id)}
               >
-                {/* Badge catégorie + sévérité + page */}
+                {/* Badge catégorie + sévérité + page + coche */}
                 <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                  <span
-                    className={`text-xs font-medium px-1.5 py-0.5 rounded-full ${cfg.badge}`}
-                  >
+                  <span className={`text-xs font-medium px-1.5 py-0.5 rounded-full ${cfg.badge}`}>
                     {cfg.label}
                   </span>
                   <span className={`text-xs ${sev.color}`}>{sev.label}</span>
                   {correction.pageNum !== undefined && (
-                    <span className="text-xs text-gray-400 ml-auto font-mono">
-                      p.&nbsp;{correction.pageNum}
-                    </span>
+                    <span className="text-xs text-gray-400 font-mono">p.&nbsp;{correction.pageNum}</span>
                   )}
+                  {/* Bouton coche — stoppe la propagation pour ne pas sélectionner */}
+                  <button
+                    className={`ml-auto flex items-center justify-center w-5 h-5 rounded-full border transition-colors duration-100 ${
+                      isDone
+                        ? 'bg-green-500 border-green-500 text-white'
+                        : 'border-gray-300 text-transparent hover:border-green-400 hover:text-green-400'
+                    }`}
+                    title={isDone ? 'Marquer comme non faite' : 'Marquer comme faite'}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onToggleDone(correction.id)
+                    }}
+                    aria-label={isDone ? 'Correction faite' : 'Marquer comme faite'}
+                  >
+                    <CheckIcon className="w-3 h-3" />
+                  </button>
                 </div>
 
                 {/* Original → Corrigé */}
-                <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                <div className={`flex items-center gap-1.5 mb-1.5 flex-wrap ${isDone ? 'line-through' : ''}`}>
                   <span className="line-through text-red-500 text-sm font-mono bg-red-50 px-1 rounded">
                     {correction.snippet}
                   </span>
@@ -163,20 +209,32 @@ export function CorrectionPanel({ corrections, selectedId, onSelect }: Props) {
                 </div>
 
                 {/* Règle */}
-                <div className="text-sm font-semibold text-gray-800 mb-1">
-                  {correction.rule}
-                </div>
+                <div className="text-sm font-semibold text-gray-800 mb-1">{correction.rule}</div>
 
                 {/* Explication */}
-                <div className="text-xs text-gray-500 leading-relaxed">
-                  {correction.explanation}
-                </div>
+                <div className="text-xs text-gray-500 leading-relaxed">{correction.explanation}</div>
               </div>
             )
           })
         )}
       </div>
     </div>
+  )
+}
+
+function CheckIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 12 12"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <polyline points="2,6 5,9 10,3" />
+    </svg>
   )
 }
 
@@ -193,9 +251,7 @@ function FilterBtn({
     <button
       onClick={onClick}
       className={`text-xs px-2 py-0.5 rounded-full font-medium transition-colors duration-100 ${
-        active
-          ? 'bg-gray-800 text-white'
-          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+        active ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
       }`}
     >
       {label}
