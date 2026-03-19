@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useCallback, useEffect, useRef } from 'react'
+import dynamic from 'next/dynamic'
 import { UploadZone } from '@/components/UploadZone'
 import { AnnotatedText } from '@/components/AnnotatedText'
 import { CorrectionPanel } from '@/components/CorrectionPanel'
@@ -11,8 +12,16 @@ import {
   saveCachedDoc,
   updateCachedSession,
   loadLastDocMeta,
+  fileCacheKey,
 } from '@/lib/docCache'
 import type { LastDocMeta } from '@/lib/docCache'
+import { saveFile, loadFile } from '@/lib/fileCache'
+
+// Chargement dynamique (côté client uniquement) car react-pdf utilise le DOM/Worker
+const PdfAnnotatedViewer = dynamic(
+  () => import('@/components/PdfAnnotatedViewer').then((m) => m.PdfAnnotatedViewer),
+  { ssr: false }
+)
 
 type Phase = 'upload' | 'loading' | 'results' | 'error'
 type ViewMode = 'annotated' | 'pdf'
@@ -50,12 +59,21 @@ export default function Home() {
   const [viewMode, setViewMode] = useState<ViewMode>('annotated')
   const [lastMeta, setLastMeta] = useState<LastDocMeta | null>(null)
   const [fromCache, setFromCache] = useState(false)
+  // Fichier restauré depuis IndexedDB pour la carte "Reprendre"
+  const [storedFile, setStoredFile] = useState<File | null>(null)
 
   const currentFileRef = useRef<File | null>(null)
 
-  // Lire la dernière session au montage
+  // ── Au montage : charger la dernière session ──────────────────────────────
   useEffect(() => {
-    setLastMeta(loadLastDocMeta())
+    const meta = loadLastDocMeta()
+    setLastMeta(meta)
+    if (meta) {
+      // Essayer de charger le fichier depuis IndexedDB
+      loadFile(meta.cacheKey).then((file) => {
+        if (file) setStoredFile(file)
+      })
+    }
   }, [])
 
   // Sauvegarde automatique à chaque coche ou changement de sélection
@@ -73,101 +91,113 @@ export default function Home() {
     })
   }, [])
 
-  const handleFile = useCallback(async (file: File) => {
-    // ── 1. Vérifier le cache — évite tout appel à Claude ──────────────────
-    const cached = loadCachedDoc(file)
-    if (cached) {
+  const handleFile = useCallback(
+    async (file: File) => {
+      // ── 1. Vérifier le cache — évite tout appel à Claude ──────────────────
+      const cached = loadCachedDoc(file)
+      if (cached) {
+        currentFileRef.current = file
+        setFilename(file.name)
+        setResult(cached.result)
+        setDoneIds(new Set(cached.doneIds))
+        setSelectedId(cached.selectedId)
+        setSavedAt(cached.savedAt)
+        setFromCache(true)
+
+        if (file.name.toLowerCase().endsWith('.pdf')) {
+          setPdfUrl(URL.createObjectURL(file))
+          setViewMode('pdf')
+        } else {
+          setPdfUrl(null)
+          setViewMode('annotated')
+        }
+        // Sauvegarder le fichier en IndexedDB pour la prochaine fois
+        saveFile(fileCacheKey(file), file)
+        setPhase('results')
+        return
+      }
+
+      // ── 2. Pas de cache — analyse complète ────────────────────────────────
       currentFileRef.current = file
       setFilename(file.name)
-      setResult(cached.result)
-      setDoneIds(new Set(cached.doneIds))
-      setSelectedId(cached.selectedId)
-      setSavedAt(cached.savedAt)
-      setFromCache(true)
+      setPhase('loading')
+      setProgress(5)
+      setStatus('Préparation…')
+      setResult(null)
+      setSelectedId(null)
+      setDoneIds(new Set())
+      setSavedAt(null)
+      setFromCache(false)
 
-      if (file.name.toLowerCase().endsWith('.pdf')) {
-        setPdfUrl(URL.createObjectURL(file))
-        setViewMode('pdf')
-      } else {
+      if (pdfUrl) {
+        URL.revokeObjectURL(pdfUrl)
         setPdfUrl(null)
-        setViewMode('annotated')
       }
-      setPhase('results')
-      return // ← Pas d'appel API, zéro token
-    }
+      setViewMode('annotated')
 
-    // ── 2. Pas de cache — analyse complète ────────────────────────────────
-    currentFileRef.current = file
-    setFilename(file.name)
-    setPhase('loading')
-    setProgress(5)
-    setStatus('Préparation…')
-    setResult(null)
-    setSelectedId(null)
-    setDoneIds(new Set())
-    setSavedAt(null)
-    setFromCache(false)
+      try {
+        const formData = new FormData()
+        formData.append('file', file)
+        const response = await fetch('/api/analyze', { method: 'POST', body: formData })
+        if (!response.body) throw new Error('Aucune réponse du serveur.')
 
-    if (pdfUrl) {
-      URL.revokeObjectURL(pdfUrl)
-      setPdfUrl(null)
-    }
-    setViewMode('annotated')
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
 
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      const response = await fetch('/api/analyze', { method: 'POST', body: formData })
-      if (!response.body) throw new Error('Aucune réponse du serveur.')
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() ?? ''
 
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            try {
+              const event: StreamEvent = JSON.parse(line.slice(6))
+              if (event.type === 'progress') {
+                setStatus(event.message)
+                setProgress(event.percent)
+              } else if (event.type === 'result') {
+                const r = event.data
 
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
+                saveCachedDoc(file, r, [], null)
+                // Sauvegarder le fichier dans IndexedDB
+                saveFile(fileCacheKey(file), file)
+                setSavedAt(Date.now())
+                setLastMeta(loadLastDocMeta())
+                setStoredFile(file)
 
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          try {
-            const event: StreamEvent = JSON.parse(line.slice(6))
-            if (event.type === 'progress') {
-              setStatus(event.message)
-              setProgress(event.percent)
-            } else if (event.type === 'result') {
-              const r = event.data
+                if (file.name.toLowerCase().endsWith('.pdf')) {
+                  setPdfUrl(URL.createObjectURL(file))
+                  setViewMode('pdf')
+                }
 
-              // Sauvegarder l'analyse complète pour les prochaines ouvertures
-              saveCachedDoc(file, r, [], null)
-              setSavedAt(Date.now())
-              setLastMeta(loadLastDocMeta())
-
-              if (file.name.toLowerCase().endsWith('.pdf')) {
-                setPdfUrl(URL.createObjectURL(file))
-                setViewMode('pdf')
+                setResult(r)
+                setProgress(100)
+                setPhase('results')
+              } else if (event.type === 'error') {
+                setErrorMsg(event.message)
+                setPhase('error')
               }
-
-              setResult(r)
-              setProgress(100)
-              setPhase('results')
-            } else if (event.type === 'error') {
-              setErrorMsg(event.message)
-              setPhase('error')
+            } catch {
+              // Ligne partielle
             }
-          } catch {
-            // Ligne partielle
           }
         }
+      } catch (err) {
+        setErrorMsg(err instanceof Error ? err.message : 'Erreur réseau inattendue.')
+        setPhase('error')
       }
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Erreur réseau inattendue.')
-      setPhase('error')
-    }
-  }, [pdfUrl])
+    },
+    [pdfUrl]
+  )
+
+  // Reprendre la dernière session sans re-uploader
+  const handleResume = useCallback(() => {
+    if (storedFile) handleFile(storedFile)
+  }, [storedFile, handleFile])
 
   const handleSelect = useCallback((id: string) => {
     setSelectedId((prev) => (prev === id ? null : id))
@@ -190,6 +220,8 @@ export default function Home() {
     currentFileRef.current = null
     setLastMeta(loadLastDocMeta())
   }, [pdfUrl])
+
+  const canResume = lastMeta && lastMeta.total > 0 && storedFile !== null
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -242,7 +274,7 @@ export default function Home() {
           {lastMeta && lastMeta.total > 0 && (
             <div className="w-full mb-5 bg-white border border-blue-100 rounded-xl p-4 shadow-sm">
               <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <p className="text-xs font-semibold text-blue-600 uppercase tracking-wide mb-1">
                     Dernier projet
                   </p>
@@ -254,14 +286,9 @@ export default function Home() {
                     {' · '}
                     {timeAgo(lastMeta.savedAt)}
                   </p>
-                </div>
-                <div className="flex-shrink-0 text-right">
-                  <p className="text-xs text-gray-400 mb-1.5">
-                    Rechargez le même fichier pour reprendre
-                    <br />
-                    <span className="text-green-600 font-medium">sans relancer l&apos;analyse</span>
-                  </p>
-                  <div className="w-28 h-1.5 bg-gray-100 rounded-full overflow-hidden ml-auto">
+
+                  {/* Barre de progression */}
+                  <div className="mt-2 w-40 h-1.5 bg-gray-100 rounded-full overflow-hidden">
                     <div
                       className="h-full bg-green-400 rounded-full"
                       style={{
@@ -272,6 +299,24 @@ export default function Home() {
                   <p className="text-xs text-gray-400 mt-0.5">
                     {Math.round((lastMeta.doneCount / lastMeta.total) * 100)}% fait
                   </p>
+                </div>
+
+                <div className="flex-shrink-0 flex flex-col gap-2 items-end">
+                  {/* Bouton Reprendre (si fichier disponible) */}
+                  {canResume ? (
+                    <button
+                      onClick={handleResume}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
+                    >
+                      ▶ Reprendre
+                    </button>
+                  ) : (
+                    <p className="text-xs text-gray-400 text-right max-w-[160px]">
+                      Rechargez le même fichier pour reprendre
+                      <br />
+                      <span className="text-green-600 font-medium">sans relancer l&apos;analyse</span>
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -366,7 +411,7 @@ export default function Home() {
               ) : null
             })}
 
-            {/* Toggle vue PDF / texte annoté */}
+            {/* Toggle vue PDF annoté / texte annoté */}
             {pdfUrl && (
               <div className="flex items-center gap-1 ml-2 bg-gray-100 rounded-lg p-0.5">
                 <button
@@ -387,7 +432,7 @@ export default function Home() {
                       : 'text-gray-500 hover:text-gray-700'
                   }`}
                 >
-                  📄 PDF original
+                  📄 PDF annoté
                 </button>
               </div>
             )}
@@ -404,17 +449,19 @@ export default function Home() {
 
           {/* Split view */}
           <div className="flex-1 flex overflow-hidden">
-            {/* Panneau gauche : texte annoté OU visionneuse PDF */}
-            <div className="flex-1 overflow-y-auto">
+            {/* Panneau gauche : texte annoté OU visionneuse PDF annotée */}
+            <div className="flex-1 overflow-hidden">
               {viewMode === 'pdf' && pdfUrl ? (
-                <iframe
-                  src={pdfUrl}
-                  title="PDF original"
-                  className="w-full h-full border-0"
-                  style={{ minHeight: '100%' }}
+                <PdfAnnotatedViewer
+                  pdfUrl={pdfUrl}
+                  corrections={result.corrections}
+                  selectedId={selectedId}
+                  doneIds={doneIds}
+                  onSelect={handleSelect}
+                  onToggleDone={handleToggleDone}
                 />
               ) : (
-                <div className="p-6 lg:p-10">
+                <div className="h-full overflow-y-auto p-6 lg:p-10">
                   <AnnotatedText
                     text={result.extractedText}
                     formattedHtml={result.formattedHtml}
@@ -452,7 +499,13 @@ export default function Home() {
 
 function SaveIcon() {
   return (
-    <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <svg
+      className="w-3.5 h-3.5"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    >
       <path d="M13 2H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V5l-3-3z" />
       <path d="M11 2v3H5V2" />
       <path d="M5 9h6M5 12h4" />
