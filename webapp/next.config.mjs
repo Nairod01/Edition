@@ -1,6 +1,7 @@
 
 
 const nextConfig = {
+  turbopack: {},
   webpack: (config) => {
     // Needed for pdf-parse
     config.resolve.alias.canvas = false
