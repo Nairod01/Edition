@@ -16,15 +16,17 @@ const CATEGORY_COLORS: Record<string, string> = {
   style: 'text-green-600',
 }
 
-const STORAGE_KEY = 'editoria_session_v1'
+const STORAGE_KEY = 'editoria_session_v2'
 
 interface SavedSession {
   hash: string
+  filename: string
+  timestamp: number
+  totalCorrections: number
   doneIds: string[]
   selectedId: string | null
 }
 
-/** Empreinte légère du document pour identifier une session */
 function docHash(text: string): string {
   const sample = text.slice(0, 300) + text.slice(-300) + text.length
   let h = 0
@@ -32,6 +34,27 @@ function docHash(text: string): string {
     h = (Math.imul(31, h) + sample.charCodeAt(i)) | 0
   }
   return Math.abs(h).toString(36)
+}
+
+function readSession(): SavedSession | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    return raw ? (JSON.parse(raw) as SavedSession) : null
+  } catch {
+    return null
+  }
+}
+
+function timeAgo(ts: number): string {
+  const diff = Math.floor((Date.now() - ts) / 1000)
+  if (diff < 60) return 'à l\'instant'
+  if (diff < 3600) return `il y a ${Math.floor(diff / 60)} min`
+  if (diff < 86400) return `il y a ${Math.floor(diff / 3600)} h`
+  return `il y a ${Math.floor(diff / 86400)} j`
+}
+
+function formatTime(ts: number): string {
+  return new Date(ts).toLocaleTimeString('fr', { hour: '2-digit', minute: '2-digit' })
 }
 
 export default function Home() {
@@ -43,47 +66,41 @@ export default function Home() {
   const [errorMsg, setErrorMsg] = useState('')
   const [filename, setFilename] = useState('')
   const [doneIds, setDoneIds] = useState<Set<string>>(new Set())
-  const [sessionRestored, setSessionRestored] = useState(false)
+  const [savedAt, setSavedAt] = useState<number | null>(null)
+  const [lastSession, setLastSession] = useState<SavedSession | null>(null)
 
-  // Référence sur le hash courant pour éviter une closure périmée dans l'effet
   const currentHashRef = useRef<string>('')
+  const totalCorrectionsRef = useRef<number>(0)
 
-  /** Tente de restaurer une session sauvegardée pour ce document */
-  const tryRestoreSession = useCallback((extractedText: string) => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY)
-      if (!raw) return false
-      const saved: SavedSession = JSON.parse(raw)
-      if (saved.hash !== docHash(extractedText)) return false
-      setDoneIds(new Set(saved.doneIds))
-      setSelectedId(saved.selectedId)
-      return true
-    } catch {
-      return false
-    }
+  // Lire la dernière session au montage (page d'accueil)
+  useEffect(() => {
+    setLastSession(readSession())
   }, [])
 
-  /** Sauvegarde la session courante dans le localStorage */
-  const saveSession = useCallback(
-    (doneSet: Set<string>, selId: string | null) => {
-      if (!currentHashRef.current) return
-      try {
-        const session: SavedSession = {
-          hash: currentHashRef.current,
-          doneIds: Array.from(doneSet),
-          selectedId: selId,
-        }
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(session))
-      } catch {
-        // localStorage peut être indisponible (navigateur privé, quota…)
+  const saveSession = useCallback((doneSet: Set<string>, selId: string | null) => {
+    if (!currentHashRef.current) return
+    try {
+      const session: SavedSession = {
+        hash: currentHashRef.current,
+        filename: filename || '',
+        timestamp: Date.now(),
+        totalCorrections: totalCorrectionsRef.current,
+        doneIds: Array.from(doneSet),
+        selectedId: selId,
       }
-    },
-    []
-  )
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(session))
+      setSavedAt(Date.now())
+      setLastSession(session)
+    } catch {
+      // localStorage indisponible
+    }
+  }, [filename])
 
-  // Sauvegarder à chaque changement de doneIds ou selectedId
+  // Sauvegarde automatique à chaque changement de doneIds ou selectedId
   useEffect(() => {
-    if (phase === 'results') saveSession(doneIds, selectedId)
+    if (phase === 'results' && currentHashRef.current) {
+      saveSession(doneIds, selectedId)
+    }
   }, [doneIds, selectedId, phase, saveSession])
 
   const handleToggleDone = useCallback((id: string) => {
@@ -95,69 +112,74 @@ export default function Home() {
     })
   }, [])
 
-  const handleFile = useCallback(
-    async (file: File) => {
-      setFilename(file.name)
-      setPhase('loading')
-      setProgress(5)
-      setStatus('Préparation…')
-      setResult(null)
-      setSelectedId(null)
-      setDoneIds(new Set())
-      setSessionRestored(false)
+  const handleFile = useCallback(async (file: File) => {
+    setFilename(file.name)
+    setPhase('loading')
+    setProgress(5)
+    setStatus('Préparation…')
+    setResult(null)
+    setSelectedId(null)
+    setDoneIds(new Set())
+    setSavedAt(null)
 
-      try {
-        const formData = new FormData()
-        formData.append('file', file)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
 
-        const response = await fetch('/api/analyze', { method: 'POST', body: formData })
+      const response = await fetch('/api/analyze', { method: 'POST', body: formData })
+      if (!response.body) throw new Error('Aucune réponse du serveur.')
 
-        if (!response.body) throw new Error('Aucune réponse du serveur.')
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
 
-        const reader = response.body.getReader()
-        const decoder = new TextDecoder()
-        let buffer = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
 
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
 
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split('\n')
-          buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const event: StreamEvent = JSON.parse(line.slice(6))
 
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue
-            try {
-              const event: StreamEvent = JSON.parse(line.slice(6))
+            if (event.type === 'progress') {
+              setStatus(event.message)
+              setProgress(event.percent)
+            } else if (event.type === 'result') {
+              const r = event.data
+              const hash = docHash(r.extractedText)
+              currentHashRef.current = hash
+              totalCorrectionsRef.current = r.corrections.length
 
-              if (event.type === 'progress') {
-                setStatus(event.message)
-                setProgress(event.percent)
-              } else if (event.type === 'result') {
-                const r = event.data
-                currentHashRef.current = docHash(r.extractedText)
-                const restored = tryRestoreSession(r.extractedText)
-                setSessionRestored(restored)
-                setResult(r)
-                setProgress(100)
-                setPhase('results')
-              } else if (event.type === 'error') {
-                setErrorMsg(event.message)
-                setPhase('error')
+              // Restaurer session si même document
+              const saved = readSession()
+              if (saved && saved.hash === hash) {
+                setDoneIds(new Set(saved.doneIds))
+                setSelectedId(saved.selectedId)
+                setSavedAt(saved.timestamp)
               }
-            } catch {
-              // Ligne partielle ou non-JSON, ignorer
+
+              setResult(r)
+              setProgress(100)
+              setPhase('results')
+            } else if (event.type === 'error') {
+              setErrorMsg(event.message)
+              setPhase('error')
             }
+          } catch {
+            // Ligne partielle, ignorer
           }
         }
-      } catch (err) {
-        setErrorMsg(err instanceof Error ? err.message : 'Erreur réseau inattendue.')
-        setPhase('error')
       }
-    },
-    [tryRestoreSession]
-  )
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Erreur réseau inattendue.')
+      setPhase('error')
+    }
+  }, [])
 
   const handleSelect = useCallback((id: string) => {
     setSelectedId((prev) => (prev === id ? null : id))
@@ -172,8 +194,10 @@ export default function Home() {
     setErrorMsg('')
     setFilename('')
     setDoneIds(new Set())
-    setSessionRestored(false)
+    setSavedAt(null)
     currentHashRef.current = ''
+    totalCorrectionsRef.current = 0
+    setLastSession(readSession())
   }, [])
 
   return (
@@ -223,6 +247,49 @@ export default function Home() {
             </p>
           </div>
 
+          {/* Carte "Dernier projet" */}
+          {lastSession && lastSession.totalCorrections > 0 && (
+            <div className="w-full mb-4 bg-white border border-blue-100 rounded-xl p-4 shadow-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-blue-600 uppercase tracking-wide mb-1">
+                    Dernier projet
+                  </p>
+                  <p className="text-sm font-medium text-gray-800 truncate">
+                    📄 {lastSession.filename}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {lastSession.doneIds.length}/{lastSession.totalCorrections} corrections faites
+                    {' · '}
+                    {timeAgo(lastSession.timestamp)}
+                  </p>
+                </div>
+                <div className="flex-shrink-0 text-right">
+                  <div className="text-xs text-gray-500 mb-1">
+                    Pour reprendre, rechargez le même fichier
+                  </div>
+                  {/* Barre de progression */}
+                  <div className="w-28 h-1.5 bg-gray-100 rounded-full overflow-hidden ml-auto">
+                    <div
+                      className="h-full bg-green-400 rounded-full"
+                      style={{
+                        width: `${Math.round(
+                          (lastSession.doneIds.length / lastSession.totalCorrections) * 100
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                  <p className="text-xs text-gray-400 mt-0.5 text-right">
+                    {Math.round(
+                      (lastSession.doneIds.length / lastSession.totalCorrections) * 100
+                    )}
+                    % fait
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="w-full">
             <UploadZone onFile={handleFile} />
           </div>
@@ -261,10 +328,8 @@ export default function Home() {
                 <div className="absolute inset-0 rounded-full border-4 border-gray-100" />
                 <div className="absolute inset-0 rounded-full border-4 border-t-blue-500 animate-spin" />
               </div>
-
               <h3 className="font-semibold text-gray-900 mb-1">{filename}</h3>
               <p className="text-gray-500 text-sm mb-6">{status}</p>
-
               <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
                 <div
                   className="h-full rounded-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-500"
@@ -272,7 +337,6 @@ export default function Home() {
                 />
               </div>
               <p className="text-xs text-gray-400 mt-2">{progress}%</p>
-
               <p className="text-xs text-gray-400 mt-6">
                 L&apos;analyse peut prendre 30 à 60 secondes selon la longueur du document.
               </p>
@@ -302,7 +366,7 @@ export default function Home() {
       {phase === 'results' && result && (
         <main className="flex-1 flex flex-col overflow-hidden">
           {/* Barre de stats */}
-          <div className="bg-white border-b border-gray-200 px-6 py-2.5 flex items-center gap-6 flex-wrap">
+          <div className="bg-white border-b border-gray-200 px-6 py-2.5 flex items-center gap-4 flex-wrap">
             <span className="text-sm text-gray-500 font-medium truncate max-w-xs">
               📄 {filename}
             </span>
@@ -317,17 +381,28 @@ export default function Home() {
                 </span>
               ) : null
             })}
-            {/* Indicateur session restaurée */}
-            {sessionRestored && (
-              <span className="text-xs text-green-600 font-medium ml-auto flex items-center gap-1">
-                <span>↩</span> Session restaurée
-              </span>
-            )}
+            {/* Indicateur de sauvegarde — toujours visible en mode résultats */}
+            <span className="ml-auto flex items-center gap-1 text-xs text-gray-400">
+              <svg
+                className="w-3.5 h-3.5"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+              >
+                <path d="M13 2H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V5l-3-3z" />
+                <path d="M11 2v3H5V2" />
+                <path d="M5 9h6" />
+                <path d="M5 12h4" />
+              </svg>
+              {savedAt
+                ? `Sauvegardé à ${formatTime(savedAt)}`
+                : 'Non sauvegardé'}
+            </span>
           </div>
 
           {/* Split view */}
           <div className="flex-1 flex overflow-hidden">
-            {/* Texte annoté */}
             <div className="flex-1 overflow-y-auto p-6 lg:p-10">
               <AnnotatedText
                 text={result.extractedText}
@@ -339,7 +414,6 @@ export default function Home() {
               />
             </div>
 
-            {/* Panel latéral */}
             <aside className="w-80 xl:w-96 border-l border-gray-200 bg-white overflow-y-auto flex-shrink-0">
               <CorrectionPanel
                 corrections={result.corrections}

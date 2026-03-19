@@ -151,11 +151,19 @@ export async function POST(request: NextRequest) {
         // Dédoublonnage
         allRaw = deduplicateCorrections(allRaw)
 
-        // Attribution des IDs et des numéros de page
-        const corrections: Correction[] = allRaw.map((c, i) => {
-          const pos = findSnippetPosition(extractedText, c.snippet, c.context)
+        // Trier par ordre d'apparition dans le texte, puis attribuer les IDs
+        const withPos = allRaw.map((c) => ({
+          ...c,
+          _pos: findSnippetPosition(extractedText, c.snippet, c.context) ?? Infinity,
+        }))
+        withPos.sort((a, b) => a._pos - b._pos)
+
+        const corrections: Correction[] = withPos.map((c, i) => {
+          const pos = c._pos === Infinity ? null : c._pos
           const pageNum = pos !== null ? getPageForPosition(pos, pageOffsets) : undefined
-          return { ...c, id: `c${i + 1}`, pageNum }
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          const { _pos, ...rest } = c
+          return { ...rest, id: `c${i + 1}`, pageNum }
         })
 
         const wordCount = extractedText.trim().split(/\s+/).length
