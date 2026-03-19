@@ -395,7 +395,7 @@ export default function Home() {
 
       {/* ─── Results ─── */}
       {phase === 'results' && result && (
-        <main className="flex-1 flex flex-col overflow-hidden">
+        <main className="flex-1 flex flex-col overflow-hidden min-h-0">
           {/* Barre de stats */}
           <div className="bg-white border-b border-gray-200 px-4 py-2 flex items-center gap-3 flex-wrap text-sm">
             <span className="text-gray-500 font-medium truncate max-w-[200px]">
@@ -448,9 +448,9 @@ export default function Home() {
           </div>
 
           {/* Split view */}
-          <div className="flex-1 flex overflow-hidden">
+          <div className="flex-1 flex overflow-hidden min-h-0">
             {/* Panneau gauche : texte annoté OU visionneuse PDF annotée */}
-            <div className="flex-1 overflow-hidden">
+            <div className="flex-1 overflow-hidden min-h-0">
               {viewMode === 'pdf' && pdfUrl ? (
                 <PdfAnnotatedViewer
                   pdfUrl={pdfUrl}

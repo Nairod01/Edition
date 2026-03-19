@@ -53,6 +53,36 @@ function normalize(s: string): string {
   return s.replace(/\s+/g, ' ').trim().toLowerCase()
 }
 
+/**
+ * Trouve les positions [start, end] du snippet dans str.
+ * 1. Essai direct insensible à la casse
+ * 2. Repli regex avec espaces flexibles (gère les espaces insécables, doubles espaces, etc.)
+ */
+function findSnippet(str: string, snippet: string): [number, number] | null {
+  if (!snippet.trim()) return null
+
+  // 1. Correspondance directe insensible à la casse
+  const lowerStr = str.toLowerCase()
+  const lowerSnip = snippet.toLowerCase()
+  const directIdx = lowerStr.indexOf(lowerSnip)
+  if (directIdx !== -1) return [directIdx, directIdx + snippet.length]
+
+  // 2. Regex avec espaces flexibles (collapse de whitespace, espaces insécables…)
+  try {
+    const escaped = snippet
+      .trim()
+      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/\s+/g, '\\s+')
+    const regex = new RegExp(escaped, 'i')
+    const m = str.match(regex)
+    if (m && m.index !== undefined) return [m.index, m.index + m[0].length]
+  } catch {
+    // regex invalide → on abandonne
+  }
+
+  return null
+}
+
 /** Construit le renderer de texte pour une page donnée */
 function buildTextRenderer(
   pageCorrections: Correction[],
@@ -62,35 +92,12 @@ function buildTextRenderer(
   return ({ str }: { str: string; itemIndex: number }) => {
     if (!str.trim() || pageCorrections.length === 0) return str
 
-    const normStr = normalize(str)
     const matches: Array<{ start: number; end: number; correction: Correction }> = []
 
     for (const correction of pageCorrections) {
-      const normSnip = normalize(correction.snippet)
-      if (!normSnip) continue
-
-      // Cherche le snippet normalisé dans le texte normalisé
-      let searchFrom = 0
-      const idx = normStr.indexOf(normSnip, searchFrom)
-      if (idx === -1) continue
-
-      // Mapper l'indice normalisé → indice dans str original (approximatif)
-      // On utilise le ratio des longueurs
-      const ratio = str.length / normStr.length
-      const approxStart = Math.round(idx * ratio)
-      const approxEnd = Math.round((idx + normSnip.length) * ratio)
-
-      // Vérification par substring pour éviter les faux positifs
-      const candidate = str.slice(approxStart, approxEnd)
-      const normCandidate = normalize(candidate)
-      if (normCandidate.length === 0) continue
-
-      matches.push({
-        start: approxStart,
-        end: approxEnd,
-        correction,
-      })
-      searchFrom = approxEnd
+      const pos = findSnippet(str, correction.snippet)
+      if (!pos) continue
+      matches.push({ start: pos[0], end: pos[1], correction })
     }
 
     if (matches.length === 0) return str
@@ -99,10 +106,10 @@ function buildTextRenderer(
     matches.sort((a, b) => a.start - b.start)
 
     let html = ''
-    let pos = 0
+    let cursor = 0
     for (const { start, end, correction } of matches) {
-      if (start < pos) continue // chevauchement → ignorer
-      html += escapeHtml(str.slice(pos, start))
+      if (start < cursor) continue // chevauchement → ignorer
+      html += escapeHtml(str.slice(cursor, start))
 
       const isSelected = correction.id === selectedId
       const bg = isSelected
@@ -113,9 +120,9 @@ function buildTextRenderer(
       const tooltip = escapeHtml(`${correction.rule} → ${correction.corrected}`)
 
       html += `<mark style="background:${bg};${borderBottom}${outline}border-radius:2px;padding:0 1px;cursor:pointer;" data-corr-id="${correction.id}" title="${tooltip}">${escapeHtml(str.slice(start, end))}</mark>`
-      pos = end
+      cursor = end
     }
-    html += escapeHtml(str.slice(pos))
+    html += escapeHtml(str.slice(cursor))
     return html
   }
 }
@@ -236,12 +243,12 @@ export function PdfAnnotatedViewer({
     [goTo]
   )
 
-  // Adapter la largeur selon le container
+  // Adapter la largeur selon le container (réserver ~260px pour le panneau corrections)
   useEffect(() => {
     if (!containerRef.current) return
     const obs = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect.width
-      if (w) setPageWidth(Math.min(w - 48, 900))
+      if (w) setPageWidth(Math.min(w - 48 - 260, 760))
     })
     obs.observe(containerRef.current)
     return () => obs.disconnect()
@@ -345,12 +352,12 @@ export function PdfAnnotatedViewer({
               Impossible de charger le PDF.
             </div>
           }
-          className="flex flex-col items-center gap-6"
+          className="flex flex-col items-start gap-8"
         >
           {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => {
+            const pageCorrs = corrsByPage.get(pageNum) ?? []
             const pageActive = activeCorrsByPage.get(pageNum) ?? 0
-            const pageTotal = corrsByPage.get(pageNum)?.length ?? 0
-            const pageDone = pageTotal - pageActive
+            const pageDone = pageCorrs.length - pageActive
 
             return (
               <div
@@ -359,71 +366,99 @@ export function PdfAnnotatedViewer({
                   if (el) pageRefs.current.set(pageNum, el)
                   else pageRefs.current.delete(pageNum)
                 }}
-                className="relative"
+                className="flex items-start gap-4"
               >
-                {/* Indicateur de corrections dans la marge gauche */}
-                {pageTotal > 0 && (
-                  <div className="absolute -left-5 top-2 flex flex-col gap-0.5 items-end z-10">
-                    {corrsByPage.get(pageNum)!.map((c) => (
-                      <button
-                        key={c.id}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          goTo(c.id)
-                        }}
-                        title={`${c.rule} — ${c.snippet}`}
-                        className={`w-2.5 h-2.5 rounded-full transition-all ${
-                          doneIds.has(c.id) ? 'opacity-30' : 'opacity-90 hover:scale-125'
-                        } ${c.id === selectedId ? 'ring-2 ring-offset-1 ring-gray-600 scale-125' : ''}`}
-                        style={{ backgroundColor: CATEGORY_DOT[c.category] ?? '#888' }}
-                      />
-                    ))}
+                {/* ── Page PDF ── */}
+                <div className="flex-shrink-0">
+                  <div className="shadow-lg rounded overflow-hidden bg-white">
+                    <Page
+                      pageNumber={pageNum}
+                      width={pageWidth}
+                      renderTextLayer={true}
+                      renderAnnotationLayer={false}
+                      customTextRenderer={getTextRenderer(pageNum)}
+                    />
+                  </div>
+                  {/* Étiquette de page */}
+                  <div className="mt-1.5 flex items-center gap-2 text-xs text-gray-400 px-1">
+                    <span>page {pageNum}</span>
+                    {pageCorrs.length > 0 && (
+                      <span className="text-gray-300">·</span>
+                    )}
+                    {(['orthographe', 'grammaire', 'typographie', 'style'] as const).map((cat) => {
+                      const n = pageCorrs.filter((c) => c.category === cat && !doneIds.has(c.id)).length
+                      return n > 0 ? (
+                        <span key={cat} className="flex items-center gap-0.5" title={`${n} ${CATEGORY_LABEL[cat]}`}>
+                          <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ backgroundColor: CATEGORY_DOT[cat] }} />
+                          <span>{n}</span>
+                        </span>
+                      ) : null
+                    })}
+                    {pageDone > 0 && <span className="text-green-500">· {pageDone} faites</span>}
+                  </div>
+                </div>
+
+                {/* ── Corrections de cette page ── */}
+                {pageCorrs.length > 0 && (
+                  <div className="w-56 flex-shrink-0 flex flex-col gap-2 pt-1">
+                    {pageCorrs.map((c) => {
+                      const isDone = doneIds.has(c.id)
+                      const isSelected = c.id === selectedId
+                      return (
+                        <button
+                          key={c.id}
+                          onClick={(e) => { e.stopPropagation(); goTo(c.id) }}
+                          className={`w-full text-left px-2.5 py-2 rounded-lg border text-xs transition-colors ${
+                            isDone ? 'opacity-40' : ''
+                          } ${
+                            isSelected
+                              ? 'border-gray-400 bg-gray-50 shadow-sm'
+                              : 'border-gray-200 bg-white hover:bg-gray-50'
+                          }`}
+                        >
+                          {/* Catégorie */}
+                          <div className="flex items-center gap-1 mb-1">
+                            <span
+                              className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                              style={{ backgroundColor: CATEGORY_DOT[c.category] ?? '#888' }}
+                            />
+                            <span className="text-gray-400 uppercase text-[10px] tracking-wide leading-none">
+                              {CATEGORY_LABEL[c.category] ?? c.category}
+                            </span>
+                            {isDone && <span className="ml-auto text-green-500 text-[10px]">✓</span>}
+                          </div>
+                          {/* Texte fautif */}
+                          <div className="text-gray-700 font-medium truncate leading-snug">
+                            {c.snippet}
+                          </div>
+                          {/* Suggestion */}
+                          {c.corrected && (
+                            <div className="text-gray-400 truncate leading-snug mt-0.5">
+                              → {c.corrected}
+                            </div>
+                          )}
+                          {/* Règle courte */}
+                          {c.rule && (
+                            <div className="text-gray-400 truncate text-[10px] mt-0.5 italic">
+                              {c.rule}
+                            </div>
+                          )}
+                          {/* Bouton marquer faite */}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onToggleDone(c.id) }}
+                            className={`mt-1.5 w-full text-center text-[10px] py-0.5 rounded border transition-colors ${
+                              isDone
+                                ? 'border-green-200 text-green-600 bg-green-50'
+                                : 'border-gray-200 text-gray-400 hover:bg-gray-100'
+                            }`}
+                          >
+                            {isDone ? '✓ Faite' : 'Marquer faite'}
+                          </button>
+                        </button>
+                      )
+                    })}
                   </div>
                 )}
-
-                {/* Page PDF */}
-                <div className="shadow-lg rounded overflow-hidden bg-white">
-                  <Page
-                    pageNumber={pageNum}
-                    width={pageWidth}
-                    renderTextLayer={true}
-                    renderAnnotationLayer={false}
-                    customTextRenderer={getTextRenderer(pageNum)}
-                  />
-                </div>
-
-                {/* Étiquette de page + compteur de corrections */}
-                <div className="mt-1.5 flex items-center justify-between text-xs text-gray-400 px-1">
-                  <span>page {pageNum}</span>
-                  {pageTotal > 0 && (
-                    <div className="flex items-center gap-1.5">
-                      {/* Dots par catégorie sur cette page */}
-                      {(['orthographe', 'grammaire', 'typographie', 'style'] as const).map(
-                        (cat) => {
-                          const n = corrsByPage
-                            .get(pageNum)!
-                            .filter((c) => c.category === cat && !doneIds.has(c.id)).length
-                          return n > 0 ? (
-                            <span
-                              key={cat}
-                              className="flex items-center gap-0.5"
-                              title={`${n} ${CATEGORY_LABEL[cat]}`}
-                            >
-                              <span
-                                className="w-1.5 h-1.5 rounded-full inline-block"
-                                style={{ backgroundColor: CATEGORY_DOT[cat] }}
-                              />
-                              <span>{n}</span>
-                            </span>
-                          ) : null
-                        }
-                      )}
-                      {pageDone > 0 && (
-                        <span className="text-green-500">· {pageDone} faites</span>
-                      )}
-                    </div>
-                  )}
-                </div>
               </div>
             )
           })}
