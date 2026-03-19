@@ -6,30 +6,22 @@ import type { Correction, AnalysisResult } from '@/lib/types'
 export const maxDuration = 60
 export const runtime = 'nodejs'
 
-const SYSTEM_PROMPT = `Tu es un correcteur professionnel expert en langue française (et anglaise si le texte l'est), fonctionnant comme le logiciel Prolexis. Tu analyses le texte avec la rigueur d'un éditeur professionnel et identifies TOUTES les erreurs et améliorations possibles.
+const SYSTEM_PROMPT = `Correcteur professionnel de français (niveau éditeur). Détecte TOUTES les erreurs réelles — pas les choix stylistiques délibérés.
 
-CATÉGORIES DE CORRECTION :
-• orthographe : fautes d'orthographe, homophones (a/à, ou/où, se/ce, s'est/c'est, quel/quelle/qu'elle, ces/ses/c'est, etc.), accents manquants ou erronés, pluriels irréguliers
-• grammaire : accord sujet-verbe, conjugaison (temps, modes), participes passés avec avoir ou être, pronoms, prépositions incorrectes, syntaxe
-• typographie : espace manquante avant : ; ! ?, guillemets français « » vs "anglophones", tiret em — vs trait d'union -, points de suspension … vs ..., majuscule après point final, apostrophe typographique ' vs '
-• style : répétitions du même mot dans un rayon de 50 caractères, phrases > 40 mots, tournures passives excessives, anglicismes, pléonasmes, niveaux de langue incohérents, clichés
+4 CATÉGORIES :
+- orthographe : homophones (a/à, ou/où, ces/ses/c'est, s'est/c'est, quel/quelle/qu'elle…), accents, pluriels irréguliers
+- grammaire : accord sujet-verbe, participes passés (avoir/être), conjugaison, pronoms, prépositions
+- typographie : espace insécable avant : ; ! ? et après «, guillemets «\u00a0»\u00a0» (jamais " "), … (U+2026, jamais ...), — (jamais -), majuscule après . ! ?
+- style : répétition du même mot à moins de 50 caractères, phrase > 40 mots, anglicisme, pléonasme
 
-RÈGLES TYPOGRAPHIQUES FRANÇAISES PRIORITAIRES :
-- Espace INSÉCABLE avant : ; ! ? et après «
-- Guillemets français : « texte » (avec espaces) — jamais "texte" ou "texte"
-- Points de suspension : … (caractère unique U+2026) — jamais trois points séparés ...
-- Tiret de dialogue : — (em dash) — jamais un simple trait d'union -
-- Pas d'espace avant la virgule ni le point
-- Majuscule obligatoire après . ! ? en début de phrase
-
-CONSIGNES IMPORTANTES :
-1. "snippet" = le texte EXACT fautif tel qu'il apparaît dans le document (verbatim, max 60 caractères)
-2. "context" = la phrase ou le segment contenant l'erreur pour localisation (max 150 caractères)
-3. "corrected" = uniquement le snippet corrigé (pas la phrase entière)
-4. "rule" = nom court et précis de la règle (ex: "Accord sujet-verbe", "Homophone a/à")
-5. "explanation" = explication pédagogique en 2-3 phrases claires
-6. "severity" = "error" (faute évidente), "warning" (probable), "suggestion" (amélioration)
-7. Ne signale que les erreurs RÉELLES, pas les choix stylistiques volontaires`
+CHAMPS JSON :
+- snippet : texte EXACT fautif (verbatim, ≤ 60 chars)
+- context : phrase contenant l'erreur (≤ 150 chars)
+- corrected : uniquement le snippet corrigé
+- category : orthographe | grammaire | typographie | style
+- rule : nom court ("Homophone a/à", "Accord sujet-verbe"…)
+- explanation : 2 phrases pédagogiques
+- severity : error | warning | suggestion`
 
 function buildUserPrompt(text: string, chunkInfo?: string): string {
   return `Analyse ce texte${chunkInfo ? ` (${chunkInfo})` : ''} et identifie TOUTES les corrections nécessaires.
@@ -125,7 +117,7 @@ export async function POST(request: NextRequest) {
 
         // Découper si le texte est très long
         const MAX_CHUNK = 80_000 // ~20K tokens — laisse de la place pour la réponse
-        const chunks = chunkText(extractedText, MAX_CHUNK)
+        const chunks = chunkText(extractedText, MAX_CHUNK, 500)
 
         let allRaw: Omit<Correction, 'id'>[] = []
 
@@ -212,6 +204,7 @@ async function analyzeChunk(
     const response = await client.messages.create({
       model: 'claude-opus-4-6',
       max_tokens: 16000,
+      temperature: 0, // résultats déterministes — même doc = mêmes corrections
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: buildUserPrompt(text, chunkLabel) }],
     })
@@ -269,12 +262,12 @@ function validateSeverity(sev: unknown): Correction['severity'] {
 }
 
 /** Découpe le texte en chunks en respectant les frontières de paragraphes */
-function chunkText(text: string, maxSize: number): string[] {
+function chunkText(text: string, maxSize: number, overlap = 500): string[] {
   if (text.length <= maxSize) return [text]
 
   const chunks: string[] = []
   let start = 0
-  const OVERLAP = 2000
+  const OVERLAP = overlap
 
   while (start < text.length) {
     let end = Math.min(start + maxSize, text.length)
