@@ -97,8 +97,13 @@ export async function POST(request: NextRequest) {
         send({ type: 'progress', message: 'Extraction du texte…', percent: 10 })
 
         let extractedText: string
+        let formattedHtml: string | undefined
+        let pageOffsets: number[] = []
         try {
-          extractedText = await extractText(file)
+          const extracted = await extractText(file)
+          extractedText = extracted.text
+          formattedHtml = extracted.formattedHtml
+          pageOffsets = extracted.pageOffsets
         } catch (err) {
           send({
             type: 'error',
@@ -146,14 +151,19 @@ export async function POST(request: NextRequest) {
         // Dédoublonnage
         allRaw = deduplicateCorrections(allRaw)
 
-        // Attribution des IDs
-        const corrections: Correction[] = allRaw.map((c, i) => ({ ...c, id: `c${i + 1}` }))
+        // Attribution des IDs et des numéros de page
+        const corrections: Correction[] = allRaw.map((c, i) => {
+          const pos = findSnippetPosition(extractedText, c.snippet, c.context)
+          const pageNum = pos !== null ? getPageForPosition(pos, pageOffsets) : undefined
+          return { ...c, id: `c${i + 1}`, pageNum }
+        })
 
         const wordCount = extractedText.trim().split(/\s+/).length
 
         const result: AnalysisResult = {
           corrections,
           extractedText,
+          formattedHtml,
           language: detectLanguage(extractedText),
           charCount: extractedText.length,
           wordCount,
@@ -290,6 +300,41 @@ function deduplicateCorrections(corrections: Omit<Correction, 'id'>[]): Omit<Cor
     seen.add(key)
     return true
   })
+}
+
+/** Trouve la position d'un snippet dans le texte (même logique que annotate.ts) */
+function findSnippetPosition(text: string, snippet: string, context: string): number | null {
+  if (!snippet) return null
+
+  const ctxKey = context.slice(0, Math.min(50, context.length)).trim()
+  if (ctxKey) {
+    const ctxIdx = text.indexOf(ctxKey)
+    if (ctxIdx !== -1) {
+      const searchFrom = Math.max(0, ctxIdx - 20)
+      const searchTo = Math.min(text.length, ctxIdx + context.length + 20)
+      const idx = text.indexOf(snippet, searchFrom)
+      if (idx !== -1 && idx < searchTo) return idx
+    }
+  }
+
+  const idx = text.indexOf(snippet)
+  if (idx !== -1) return idx
+
+  const lowerIdx = text.toLowerCase().indexOf(snippet.toLowerCase())
+  if (lowerIdx !== -1) return lowerIdx
+
+  return null
+}
+
+/** Retourne le numéro de page (1-based) pour une position dans le texte */
+function getPageForPosition(pos: number, pageOffsets: number[]): number | undefined {
+  if (pageOffsets.length === 0) return undefined
+  let page = 1
+  for (let i = 0; i < pageOffsets.length; i++) {
+    if (pageOffsets[i] <= pos) page = i + 1
+    else break
+  }
+  return page
 }
 
 function detectLanguage(text: string): 'fr' | 'en' | 'mixed' {

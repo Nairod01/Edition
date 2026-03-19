@@ -15,11 +15,15 @@ export interface Correction {
   /** Explication pédagogique de la règle */
   explanation: string
   severity: Severity
+  /** Numéro de page dans le document original (PDF uniquement) */
+  pageNum?: number
 }
 
 export interface AnalysisResult {
   corrections: Correction[]
   extractedText: string
+  /** HTML mis en forme généré par mammoth (DOCX uniquement) */
+  formattedHtml?: string
   language: 'fr' | 'en' | 'mixed'
   charCount: number
   wordCount: number

@@ -2,6 +2,7 @@
 
 import { useMemo, useEffect, useRef } from 'react'
 import { annotateText } from '@/lib/annotate'
+import { injectHighlightsIntoHtml } from '@/lib/htmlAnnotate'
 import type { Correction } from '@/lib/types'
 
 const CATEGORY_STYLES: Record<string, { bg: string; border: string; hover: string }> = {
@@ -29,20 +30,60 @@ const CATEGORY_STYLES: Record<string, { bg: string; border: string; hover: strin
 
 interface Props {
   text: string
+  formattedHtml?: string
   corrections: Correction[]
   selectedId: string | null
   onSelect: (id: string) => void
 }
 
-export function AnnotatedText({ text, corrections, selectedId, onSelect }: Props) {
+export function AnnotatedText({ text, formattedHtml, corrections, selectedId, onSelect }: Props) {
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // ── Mode HTML (DOCX avec mise en forme) ──────────────────────────────────
+  const annotatedHtml = useMemo(() => {
+    if (!formattedHtml) return null
+    return injectHighlightsIntoHtml(formattedHtml, corrections)
+  }, [formattedHtml, corrections])
+
+  // Mettre à jour la sélection via manipulation DOM (sans re-render)
+  useEffect(() => {
+    if (!annotatedHtml || !containerRef.current) return
+    containerRef.current
+      .querySelectorAll('.correction-highlight')
+      .forEach((el) => el.classList.remove('ring-2', 'ring-gray-800', 'ring-offset-1'))
+    if (selectedId) {
+      const el = containerRef.current.querySelector(`[data-id="${selectedId}"]`)
+      if (el) {
+        el.classList.add('ring-2', 'ring-gray-800', 'ring-offset-1')
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    }
+  }, [selectedId, annotatedHtml])
+
+  if (annotatedHtml) {
+    return (
+      <div
+        ref={containerRef}
+        className="font-serif text-gray-900 leading-relaxed text-base formatted-doc"
+        onClick={(e) => {
+          const mark = (e.target as HTMLElement).closest('[data-id]')
+          if (mark) {
+            const id = mark.getAttribute('data-id')
+            if (id) onSelect(id)
+          }
+        }}
+        dangerouslySetInnerHTML={{ __html: annotatedHtml }}
+      />
+    )
+  }
+
+  // ── Mode texte brut (PDF ou DOCX sans HTML) ───────────────────────────────
   const { segments } = useMemo(() => annotateText(text, corrections), [text, corrections])
   const correctionMap = useMemo(
     () => new Map(corrections.map((c) => [c.id, c])),
     [corrections]
   )
 
-  // Scroller vers l'annotation sélectionnée
-  const selectedRef = useRef<HTMLSpanElement | null>(null)
   useEffect(() => {
     if (selectedId) {
       const el = document.getElementById(`ann-${selectedId}`)

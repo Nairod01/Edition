@@ -136,14 +136,19 @@ export function CorrectionPanel({ corrections, selectedId, onSelect }: Props) {
                 `}
                 onClick={() => onSelect(correction.id)}
               >
-                {/* Badge catégorie + sévérité */}
-                <div className="flex items-center gap-2 mb-1.5">
+                {/* Badge catégorie + sévérité + page */}
+                <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                   <span
                     className={`text-xs font-medium px-1.5 py-0.5 rounded-full ${cfg.badge}`}
                   >
                     {cfg.label}
                   </span>
                   <span className={`text-xs ${sev.color}`}>{sev.label}</span>
+                  {correction.pageNum !== undefined && (
+                    <span className="text-xs text-gray-400 ml-auto font-mono">
+                      p.&nbsp;{correction.pageNum}
+                    </span>
+                  )}
                 </div>
 
                 {/* Original → Corrigé */}
