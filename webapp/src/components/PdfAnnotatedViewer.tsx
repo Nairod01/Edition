@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
+import type { TextContent, TextItem } from 'react-pdf'
 import 'react-pdf/dist/Page/TextLayer.css'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import type { Correction } from '@/lib/types'
@@ -48,26 +49,19 @@ function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;')
 }
 
-/** Normalise les espaces pour une comparaison souple */
-function normalize(s: string): string {
-  return s.replace(/\s+/g, ' ').trim().toLowerCase()
-}
-
 /**
  * Trouve les positions [start, end] du snippet dans str.
  * 1. Essai direct insensible à la casse
- * 2. Repli regex avec espaces flexibles (gère les espaces insécables, doubles espaces, etc.)
+ * 2. Repli regex avec espaces flexibles
  */
 function findSnippet(str: string, snippet: string): [number, number] | null {
   if (!snippet.trim()) return null
 
-  // 1. Correspondance directe insensible à la casse
   const lowerStr = str.toLowerCase()
   const lowerSnip = snippet.toLowerCase()
   const directIdx = lowerStr.indexOf(lowerSnip)
   if (directIdx !== -1) return [directIdx, directIdx + snippet.length]
 
-  // 2. Regex avec espaces flexibles (collapse de whitespace, espaces insécables…)
   try {
     const escaped = snippet
       .trim()
@@ -83,38 +77,74 @@ function findSnippet(str: string, snippet: string): [number, number] | null {
   return null
 }
 
-/** Construit le renderer de texte pour une page donnée */
+// ── Données de texte pré-calculées par page ───────────────────────────────
+
+interface ItemRange {
+  start: number
+  end: number
+}
+
+interface PageTextData {
+  /** Position de chaque item (index → {start, end}) dans le texte complet */
+  itemRanges: ItemRange[]
+  /** Texte complet de la page (concaténation de tous les items) */
+  fullText: string
+  /** Position du snippet dans le texte complet, par correctionId */
+  snippetPositions: Map<string, [number, number] | null>
+}
+
+// ── Renderer de texte utilisant les données pré-calculées ─────────────────
+
 function buildTextRenderer(
+  pageTextData: PageTextData | undefined,
   pageCorrections: Correction[],
   selectedId: string | null,
-  onSelect: (id: string) => void
 ) {
-  return ({ str }: { str: string; itemIndex: number }) => {
+  return ({ str, itemIndex }: { str: string; itemIndex: number }) => {
     if (!str.trim() || pageCorrections.length === 0) return str
 
     const matches: Array<{ start: number; end: number; correction: Correction }> = []
 
-    for (const correction of pageCorrections) {
-      const pos = findSnippet(str, correction.snippet)
-      if (!pos) continue
-      matches.push({ start: pos[0], end: pos[1], correction })
+    if (pageTextData) {
+      // ── Correspondance multi-items via le texte complet de la page ──────
+      const itemRange = pageTextData.itemRanges[itemIndex]
+      if (itemRange) {
+        for (const corr of pageCorrections) {
+          const pos = pageTextData.snippetPositions.get(corr.id)
+          if (!pos) continue
+          const [snipStart, snipEnd] = pos
+
+          // Ignorer si le snippet ne chevauche pas cet item
+          if (snipEnd <= itemRange.start || snipStart >= itemRange.end) continue
+
+          // Calculer l'overlap dans le référentiel de l'item
+          const start = Math.max(snipStart, itemRange.start) - itemRange.start
+          const end = Math.min(snipEnd, itemRange.end) - itemRange.start
+          matches.push({ start, end, correction: corr })
+        }
+      }
+    } else {
+      // ── Fallback : correspondance directe dans l'item (snippets courts) ──
+      for (const corr of pageCorrections) {
+        const pos = findSnippet(str, corr.snippet)
+        if (pos) matches.push({ start: pos[0], end: pos[1], correction: corr })
+      }
     }
 
     if (matches.length === 0) return str
 
-    // Trier par position, construire le HTML
     matches.sort((a, b) => a.start - b.start)
 
     let html = ''
     let cursor = 0
     for (const { start, end, correction } of matches) {
-      if (start < cursor) continue // chevauchement → ignorer
+      if (start < cursor) continue
       html += escapeHtml(str.slice(cursor, start))
 
       const isSelected = correction.id === selectedId
       const bg = isSelected
-        ? CATEGORY_SELECTED_BG[correction.category] ?? CATEGORY_SELECTED_BG.style
-        : CATEGORY_BG[correction.category] ?? CATEGORY_BG.style
+        ? (CATEGORY_SELECTED_BG[correction.category] ?? CATEGORY_SELECTED_BG.style)
+        : (CATEGORY_BG[correction.category] ?? CATEGORY_BG.style)
       const outline = isSelected ? 'outline:2px solid #1e3a5f;outline-offset:1px;' : ''
       const borderBottom = `border-bottom:2px solid ${CATEGORY_DOT[correction.category] ?? '#888'};`
       const tooltip = escapeHtml(`${correction.rule} → ${correction.corrected}`)
@@ -151,6 +181,11 @@ export function PdfAnnotatedViewer({
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map())
   const containerRef = useRef<HTMLDivElement>(null)
 
+  // Données de texte pré-calculées par page (peuplées via onGetTextSuccess)
+  const pageTextsRef = useRef<Map<number, PageTextData>>(new Map())
+  // Compteur pour forcer le re-render du text layer quand une page charge
+  const [textLoadCount, setTextLoadCount] = useState(0)
+
   // Corrections actives (non faites)
   const activeCorrections = useMemo(
     () => corrections.filter((c) => !doneIds.has(c.id)),
@@ -185,6 +220,60 @@ export function PdfAnnotatedViewer({
   const prevId = selectedIdx > 0 ? orderedIds[selectedIdx - 1] : null
   const nextId = selectedIdx < orderedIds.length - 1 ? orderedIds[selectedIdx + 1] : null
   const firstActiveId = activeCorrections[0]?.id ?? null
+
+  // Réinitialiser les données de texte quand le PDF change
+  useEffect(() => {
+    pageTextsRef.current.clear()
+    setTextLoadCount(0)
+  }, [pdfUrl])
+
+  // ── Pré-calcul des positions de snippets via onGetTextSuccess ────────────
+  const handleGetTextSuccess = useCallback(
+    (pageNum: number, textContent: TextContent) => {
+      // Filtrer pour ne garder que les TextItem (pas les TextMarkedContent)
+      const items = textContent.items.filter(
+        (item): item is TextItem => 'str' in item
+      )
+
+      // Construire le texte complet de la page et l'index de position de chaque item
+      const itemRanges: ItemRange[] = []
+      let offset = 0
+      let fullText = ''
+
+      for (const item of items) {
+        itemRanges.push({ start: offset, end: offset + item.str.length })
+        fullText += item.str
+        offset += item.str.length
+      }
+
+      // Pré-calculer la position de chaque correction dans le texte complet
+      const snippetPositions = new Map<string, [number, number] | null>()
+      const pageCorrs = corrsByPage.get(pageNum) ?? []
+
+      for (const corr of pageCorrs) {
+        snippetPositions.set(corr.id, findSnippet(fullText, corr.snippet))
+      }
+
+      pageTextsRef.current.set(pageNum, { itemRanges, fullText, snippetPositions })
+
+      // Déclencher un re-render pour que le text layer utilise les nouvelles données
+      setTextLoadCount((n) => n + 1)
+    },
+    [corrsByPage]
+  )
+
+  // ── Renderer de texte mémoïsé par page ───────────────────────────────────
+  const getTextRenderer = useCallback(
+    (pageNum: number) =>
+      buildTextRenderer(
+        pageTextsRef.current.get(pageNum),
+        corrsByPage.get(pageNum) ?? [],
+        selectedId,
+      ),
+    // textLoadCount force la recréation quand onGetTextSuccess a fini de charger une page
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [corrsByPage, selectedId, textLoadCount]
+  )
 
   // Scroll vers une correction
   const scrollToCorrection = useCallback(
@@ -243,23 +332,16 @@ export function PdfAnnotatedViewer({
     [goTo]
   )
 
-  // Adapter la largeur selon le container (réserver ~260px pour le panneau corrections)
+  // Adapter la largeur selon le container (réserver ~256px pour le panneau corrections)
   useEffect(() => {
     if (!containerRef.current) return
     const obs = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect.width
-      if (w) setPageWidth(Math.min(w - 48 - 260, 760))
+      if (w) setPageWidth(Math.min(w - 256, 760))
     })
     obs.observe(containerRef.current)
     return () => obs.disconnect()
   }, [])
-
-  // Renderer de texte mémoïsé par page
-  const getTextRenderer = useCallback(
-    (pageNum: number) =>
-      buildTextRenderer(corrsByPage.get(pageNum) ?? [], selectedId, onSelect),
-    [corrsByPage, selectedId, onSelect]
-  )
 
   const totalActive = activeCorrections.length
   const totalDone = doneIds.size
@@ -267,7 +349,7 @@ export function PdfAnnotatedViewer({
   return (
     <div className="flex flex-col h-full bg-gray-50">
       {/* ── Barre de navigation ─────────────────────────────────────────────── */}
-      <div className="sticky top-0 z-10 bg-white border-b border-gray-200 px-4 py-2 flex items-center gap-3 flex-wrap shadow-sm">
+      <div className="flex-shrink-0 bg-white border-b border-gray-200 px-4 py-2 flex items-center gap-3 flex-wrap shadow-sm">
         {/* Prev / Next correction */}
         <button
           onClick={() => prevId && goTo(prevId)}
@@ -326,7 +408,7 @@ export function PdfAnnotatedViewer({
         )}
 
         {/* Légende raccourcis */}
-        <div className="ml-auto flex items-center gap-2 text-xs text-gray-400 hidden md:flex">
+        <div className="ml-auto hidden md:flex items-center gap-2 text-xs text-gray-400">
           <span>← → navigation</span>
           <span>·</span>
           <span>Espace : marquer faite</span>
@@ -377,24 +459,36 @@ export function PdfAnnotatedViewer({
                       renderTextLayer={true}
                       renderAnnotationLayer={false}
                       customTextRenderer={getTextRenderer(pageNum)}
+                      onGetTextSuccess={(textContent) =>
+                        handleGetTextSuccess(pageNum, textContent)
+                      }
                     />
                   </div>
                   {/* Étiquette de page */}
                   <div className="mt-1.5 flex items-center gap-2 text-xs text-gray-400 px-1">
                     <span>page {pageNum}</span>
-                    {pageCorrs.length > 0 && (
-                      <span className="text-gray-300">·</span>
-                    )}
+                    {pageCorrs.length > 0 && <span className="text-gray-300">·</span>}
                     {(['orthographe', 'grammaire', 'typographie', 'style'] as const).map((cat) => {
-                      const n = pageCorrs.filter((c) => c.category === cat && !doneIds.has(c.id)).length
+                      const n = pageCorrs.filter(
+                        (c) => c.category === cat && !doneIds.has(c.id)
+                      ).length
                       return n > 0 ? (
-                        <span key={cat} className="flex items-center gap-0.5" title={`${n} ${CATEGORY_LABEL[cat]}`}>
-                          <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ backgroundColor: CATEGORY_DOT[cat] }} />
+                        <span
+                          key={cat}
+                          className="flex items-center gap-0.5"
+                          title={`${n} ${CATEGORY_LABEL[cat]}`}
+                        >
+                          <span
+                            className="w-1.5 h-1.5 rounded-full inline-block"
+                            style={{ backgroundColor: CATEGORY_DOT[cat] }}
+                          />
                           <span>{n}</span>
                         </span>
                       ) : null
                     })}
-                    {pageDone > 0 && <span className="text-green-500">· {pageDone} faites</span>}
+                    {pageDone > 0 && (
+                      <span className="text-green-500">· {pageDone} faites</span>
+                    )}
                   </div>
                 </div>
 
@@ -407,7 +501,10 @@ export function PdfAnnotatedViewer({
                       return (
                         <button
                           key={c.id}
-                          onClick={(e) => { e.stopPropagation(); goTo(c.id) }}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            goTo(c.id)
+                          }}
                           className={`w-full text-left px-2.5 py-2 rounded-lg border text-xs transition-colors ${
                             isDone ? 'opacity-40' : ''
                           } ${
@@ -420,12 +517,16 @@ export function PdfAnnotatedViewer({
                           <div className="flex items-center gap-1 mb-1">
                             <span
                               className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                              style={{ backgroundColor: CATEGORY_DOT[c.category] ?? '#888' }}
+                              style={{
+                                backgroundColor: CATEGORY_DOT[c.category] ?? '#888',
+                              }}
                             />
                             <span className="text-gray-400 uppercase text-[10px] tracking-wide leading-none">
                               {CATEGORY_LABEL[c.category] ?? c.category}
                             </span>
-                            {isDone && <span className="ml-auto text-green-500 text-[10px]">✓</span>}
+                            {isDone && (
+                              <span className="ml-auto text-green-500 text-[10px]">✓</span>
+                            )}
                           </div>
                           {/* Texte fautif */}
                           <div className="text-gray-700 font-medium truncate leading-snug">
@@ -445,7 +546,10 @@ export function PdfAnnotatedViewer({
                           )}
                           {/* Bouton marquer faite */}
                           <button
-                            onClick={(e) => { e.stopPropagation(); onToggleDone(c.id) }}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              onToggleDone(c.id)
+                            }}
                             className={`mt-1.5 w-full text-center text-[10px] py-0.5 rounded border transition-colors ${
                               isDone
                                 ? 'border-green-200 text-green-600 bg-green-50'
@@ -474,7 +578,7 @@ export function PdfAnnotatedViewer({
 
       {/* ── Barre de progression globale ────────────────────────────────────── */}
       {corrections.length > 0 && (
-        <div className="bg-white border-t border-gray-200 px-4 py-2 flex items-center gap-3 text-xs text-gray-500">
+        <div className="flex-shrink-0 bg-white border-t border-gray-200 px-4 py-2 flex items-center gap-3 text-xs text-gray-500">
           <span>Progression :</span>
           <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden max-w-xs">
             <div
@@ -483,8 +587,8 @@ export function PdfAnnotatedViewer({
             />
           </div>
           <span className="text-gray-400">
-            {totalDone} / {corrections.length} ({Math.round((totalDone / corrections.length) * 100)}
-            %)
+            {totalDone} / {corrections.length} (
+            {Math.round((totalDone / corrections.length) * 100)}%)
           </span>
         </div>
       )}
