@@ -275,14 +275,17 @@ export function PdfAnnotatedViewer({
     [corrsByPage, selectedId, textLoadCount]
   )
 
-  // Scroll vers une correction
+  // Scroll vers la correction — d'abord le <mark> dans le PDF, sinon la page
   const scrollToCorrection = useCallback(
     (id: string) => {
+      const mark = containerRef.current?.querySelector(`[data-corr-id="${id}"]`)
+      if (mark) {
+        mark.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        return
+      }
       const corr = corrections.find((c) => c.id === id)
       if (!corr) return
-      const page = corr.pageNum ?? 1
-      const ref = pageRefs.current.get(page)
-      ref?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      pageRefs.current.get(corr.pageNum ?? 1)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     },
     [corrections]
   )
@@ -343,7 +346,6 @@ export function PdfAnnotatedViewer({
     return () => obs.disconnect()
   }, [])
 
-  const totalActive = activeCorrections.length
   const totalDone = doneIds.size
 
   return (
@@ -492,77 +494,6 @@ export function PdfAnnotatedViewer({
                   </div>
                 </div>
 
-                {/* ── Corrections de cette page ── */}
-                {pageCorrs.length > 0 && (
-                  <div className="w-56 flex-shrink-0 flex flex-col gap-2 pt-1">
-                    {pageCorrs.map((c) => {
-                      const isDone = doneIds.has(c.id)
-                      const isSelected = c.id === selectedId
-                      return (
-                        <button
-                          key={c.id}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            goTo(c.id)
-                          }}
-                          className={`w-full text-left px-2.5 py-2 rounded-lg border text-xs transition-colors ${
-                            isDone ? 'opacity-40' : ''
-                          } ${
-                            isSelected
-                              ? 'border-gray-400 bg-gray-50 shadow-sm'
-                              : 'border-gray-200 bg-white hover:bg-gray-50'
-                          }`}
-                        >
-                          {/* Catégorie */}
-                          <div className="flex items-center gap-1 mb-1">
-                            <span
-                              className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                              style={{
-                                backgroundColor: CATEGORY_DOT[c.category] ?? '#888',
-                              }}
-                            />
-                            <span className="text-gray-400 uppercase text-[10px] tracking-wide leading-none">
-                              {CATEGORY_LABEL[c.category] ?? c.category}
-                            </span>
-                            {isDone && (
-                              <span className="ml-auto text-green-500 text-[10px]">✓</span>
-                            )}
-                          </div>
-                          {/* Texte fautif */}
-                          <div className="text-gray-700 font-medium truncate leading-snug">
-                            {c.snippet}
-                          </div>
-                          {/* Suggestion */}
-                          {c.corrected && (
-                            <div className="text-gray-400 truncate leading-snug mt-0.5">
-                              → {c.corrected}
-                            </div>
-                          )}
-                          {/* Règle courte */}
-                          {c.rule && (
-                            <div className="text-gray-400 truncate text-[10px] mt-0.5 italic">
-                              {c.rule}
-                            </div>
-                          )}
-                          {/* Bouton marquer faite */}
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              onToggleDone(c.id)
-                            }}
-                            className={`mt-1.5 w-full text-center text-[10px] py-0.5 rounded border transition-colors ${
-                              isDone
-                                ? 'border-green-200 text-green-600 bg-green-50'
-                                : 'border-gray-200 text-gray-400 hover:bg-gray-100'
-                            }`}
-                          >
-                            {isDone ? '✓ Faite' : 'Marquer faite'}
-                          </button>
-                        </button>
-                      )
-                    })}
-                  </div>
-                )}
               </div>
             )
           })}

@@ -101,12 +101,14 @@ async function buildCorrectedDoc(
   return Buffer.from(await Packer.toBuffer(doc))
 }
 
-const CATEGORY_CONFIG = {
+const CATEGORY_CONFIG: Record<string, { label: string; color: string }> = {
   orthographe: { label: 'Orthographe', color: 'C0392B' },
   grammaire: { label: 'Grammaire', color: 'D35400' },
   typographie: { label: 'Typographie', color: '2471A3' },
   style: { label: 'Style & Syntaxe', color: '1E8449' },
-} as const
+  coherence: { label: 'Cohérence', color: '7D3C98' },
+  renvoi: { label: 'Renvois de page', color: 'B7950B' },
+}
 
 /** Génère un rapport de corrections formaté */
 async function buildReportDoc(corrections: Correction[], filename: string): Promise<Buffer> {
@@ -116,6 +118,8 @@ async function buildReportDoc(corrections: Correction[], filename: string): Prom
     'grammaire',
     'typographie',
     'style',
+    'coherence',
+    'renvoi',
   ]
 
   const children: Paragraph[] = [

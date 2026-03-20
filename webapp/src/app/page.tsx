@@ -31,6 +31,8 @@ const CATEGORY_COLORS: Record<string, string> = {
   grammaire: 'text-orange-500',
   typographie: 'text-blue-600',
   style: 'text-green-600',
+  coherence: 'text-purple-600',
+  renvoi: 'text-yellow-600',
 }
 
 function timeAgo(ts: number): string {
@@ -224,7 +226,7 @@ export default function Home() {
   const canResume = lastMeta && lastMeta.total > 0 && storedFile !== null
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="h-screen flex flex-col overflow-hidden">
       {/* Header */}
       <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between sticky top-0 z-20 shadow-sm">
         <div className="flex items-center gap-3">
@@ -235,15 +237,17 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="hidden md:flex items-center gap-4">
+        <div className="hidden md:flex items-center gap-3 flex-wrap">
           {[
             { dot: 'bg-red-400', label: 'Orthographe' },
             { dot: 'bg-orange-400', label: 'Grammaire' },
             { dot: 'bg-blue-400', label: 'Typographie' },
             { dot: 'bg-green-400', label: 'Style' },
+            { dot: 'bg-purple-400', label: 'Cohérence' },
+            { dot: 'bg-yellow-400', label: 'Renvois' },
           ].map(({ dot, label }) => (
             <div key={label} className="flex items-center gap-1.5">
-              <div className={`w-2.5 h-2.5 rounded-full ${dot}`} />
+              <div className={`w-2 h-2 rounded-full ${dot}`} />
               <span className="text-xs text-gray-500">{label}</span>
             </div>
           ))}
@@ -402,7 +406,7 @@ export default function Home() {
               📄 {filename}
             </span>
             <span className="text-gray-400">{result.wordCount.toLocaleString('fr')} mots</span>
-            {(['orthographe', 'grammaire', 'typographie', 'style'] as const).map((cat) => {
+            {(['orthographe', 'grammaire', 'typographie', 'style', 'coherence', 'renvoi'] as const).map((cat) => {
               const count = result.corrections.filter((c) => c.category === cat).length
               return count > 0 ? (
                 <span key={cat} className={`font-medium capitalize ${CATEGORY_COLORS[cat]}`}>

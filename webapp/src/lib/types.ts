@@ -1,4 +1,4 @@
-export type Category = 'orthographe' | 'grammaire' | 'typographie' | 'style'
+export type Category = 'orthographe' | 'grammaire' | 'typographie' | 'style' | 'coherence' | 'renvoi'
 export type Severity = 'error' | 'warning' | 'suggestion'
 
 export interface Correction {

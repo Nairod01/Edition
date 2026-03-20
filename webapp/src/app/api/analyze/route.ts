@@ -6,32 +6,31 @@ import type { Correction, AnalysisResult } from '@/lib/types'
 export const maxDuration = 60
 export const runtime = 'nodejs'
 
-const SYSTEM_PROMPT = `Correcteur professionnel de français (niveau éditeur). Détecte TOUTES les erreurs réelles — pas les choix stylistiques délibérés.
+const SYSTEM_PROMPT = `Correcteur professionnel de français (niveau éditeur). Détecte TOUTES les erreurs réelles.
 
-4 CATÉGORIES :
-- orthographe : homophones (a/à, ou/où, ces/ses/c'est, s'est/c'est, quel/quelle/qu'elle…), accents, pluriels irréguliers
-- grammaire : accord sujet-verbe, participes passés (avoir/être), conjugaison, pronoms, prépositions
-- typographie : espace insécable avant : ; ! ? et après «, guillemets «\u00a0»\u00a0» (jamais " "), … (U+2026, jamais ...), — (jamais -), majuscule après . ! ?
-- style : répétition du même mot à moins de 50 caractères, phrase > 40 mots, anglicisme, pléonasme
+6 CATÉGORIES :
+- orthographe : homophones (a/à, ou/où, ces/ses, quel/quelle…), accents, pluriels
+- grammaire : accord sujet-verbe, participes passés, conjugaison, pronoms
+- typographie : espaces insécables avant : ; ! ?, guillemets «\u00a0»\u00a0» (jamais " "), … (jamais ...), — (jamais -)
+- style : répétition à < 50 chars, phrase > 40 mots, anglicisme, pléonasme
+- coherence : même entité (personne, lieu, titre, terme) écrite différemment dans le texte — signale CHAQUE occurrence incohérente (snippet=forme utilisée ici, corrected=forme de référence à adopter partout)
+- renvoi : référence de page incomplète ou manquante (ex: "voir page", "cf. p.", "p. X", "→ p." sans numéro, ou numéro manifestement placeholder comme 0 ou 000)
 
 CHAMPS JSON :
-- snippet : texte EXACT fautif (verbatim, ≤ 60 chars)
-- context : phrase contenant l'erreur (≤ 150 chars)
-- corrected : uniquement le snippet corrigé
-- category : orthographe | grammaire | typographie | style
-- rule : nom court ("Homophone a/à", "Accord sujet-verbe"…)
-- explanation : 2 phrases pédagogiques
-- severity : error | warning | suggestion`
+- snippet : texte EXACT verbatim (≤ 60 chars)
+- context : phrase contenant l'erreur (≤ 120 chars)
+- corrected : snippet corrigé uniquement
+- category : orthographe|grammaire|typographie|style|coherence|renvoi
+- rule : nom court de la règle
+- explanation : 1 phrase concise
+- severity : error|warning|suggestion`
 
 function buildUserPrompt(text: string, chunkInfo?: string): string {
-  return `Analyse ce texte${chunkInfo ? ` (${chunkInfo})` : ''} et identifie TOUTES les corrections nécessaires.
+  return `Analyse${chunkInfo ? ` (${chunkInfo})` : ''} et retourne UNIQUEMENT du JSON valide :
+{"corrections":[{"snippet":"…","context":"…","corrected":"…","category":"…","rule":"…","explanation":"…","severity":"…"}]}
+Si aucune erreur : {"corrections":[]}
 
-Réponds UNIQUEMENT avec du JSON valide sans aucun texte avant ou après :
-{"corrections":[{"snippet":"texte fautif exact","context":"phrase contenant l'erreur","corrected":"correction","category":"orthographe|grammaire|typographie|style","rule":"Nom de la règle","explanation":"Explication pédagogique en 2-3 phrases","severity":"error|warning|suggestion"}]}
-
-Si aucune erreur détectée : {"corrections":[]}
-
-TEXTE À ANALYSER :
+TEXTE :
 ---
 ${text}
 ---`
@@ -139,6 +138,9 @@ export async function POST(request: NextRequest) {
         }
 
         send({ type: 'progress', message: 'Finalisation…', percent: 95 })
+
+        // Détection regex des renvois de page manquants (sans appel API)
+        allRaw.push(...detectMissingPageRefs(extractedText))
 
         // Dédoublonnage
         allRaw = deduplicateCorrections(allRaw)
@@ -252,7 +254,7 @@ function parseCorrections(raw: string): Omit<Correction, 'id'>[] {
 }
 
 function validateCategory(cat: unknown): Correction['category'] {
-  const valid = ['orthographe', 'grammaire', 'typographie', 'style'] as const
+  const valid = ['orthographe', 'grammaire', 'typographie', 'style', 'coherence', 'renvoi'] as const
   return (valid as readonly unknown[]).includes(cat) ? (cat as Correction['category']) : 'style'
 }
 
@@ -355,4 +357,51 @@ function detectLanguage(text: string): 'fr' | 'en' | 'mixed' {
   if (frWords > enWords * 2) return 'fr'
   if (enWords > frWords * 2) return 'en'
   return 'mixed'
+}
+
+/**
+ * Détection regex des renvois de page manquants/incomplets.
+ * Exemples ciblés : "voir page X", "cf. p.", "→ p.", "(p. 0)", "page 000"
+ */
+function detectMissingPageRefs(text: string): Omit<Correction, 'id'>[] {
+  const results: Omit<Correction, 'id'>[] = []
+  const seen = new Set<string>()
+
+  // Patterns : renvoi sans numéro ou avec placeholder évident
+  const patterns = [
+    // "voir page", "voir p.", "cf. p.", "→ p.", "see page" sans chiffre qui suit
+    /\b(voir\s+(?:la\s+)?page|cf\.?\s+p\.?|→\s*p\.?|see\s+page)\s*(?!\d)/gi,
+    // "page X" ou "p. X" où X est 0, 000, XX, ou absent
+    /\b(?:page|p\.)\s+(?:0+|X+|xx+|\?+)\b/gi,
+    // "(p. )" avec espace puis parenthèse — numéro manquant
+    /\(p\.\s*\)/gi,
+    // "renvoi" seul ou suivi de p. sans numéro
+    /\brenvoi\s+(?:(?:à\s+la\s+)?page\s*(?!\d)|p\.?\s*(?!\d))/gi,
+  ]
+
+  for (const regex of patterns) {
+    let m: RegExpExecArray | null
+    while ((m = regex.exec(text)) !== null) {
+      const snippet = m[0].slice(0, 60)
+      const key = snippet.toLowerCase().trim()
+      if (seen.has(key)) continue
+      seen.add(key)
+
+      const ctxStart = Math.max(0, m.index - 40)
+      const ctxEnd = Math.min(text.length, m.index + snippet.length + 40)
+      const context = text.slice(ctxStart, ctxEnd).replace(/\n+/g, ' ').trim()
+
+      results.push({
+        snippet,
+        context,
+        corrected: snippet + ' [N°]',
+        category: 'renvoi',
+        rule: 'Renvoi de page manquant',
+        explanation: 'Le numéro de page de ce renvoi est absent ou incomplet — à compléter avant publication.',
+        severity: 'warning',
+      })
+    }
+  }
+
+  return results
 }
