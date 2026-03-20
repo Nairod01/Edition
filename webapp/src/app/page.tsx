@@ -226,9 +226,9 @@ export default function Home() {
   const canResume = lastMeta && lastMeta.total > 0 && storedFile !== null
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between sticky top-0 z-20 shadow-sm">
+    <div className="h-screen flex flex-col">
+      {/* Header fixe */}
+      <header className="fixed top-0 left-0 right-0 z-50 bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between shadow-sm" style={{ height: '56px' }}>
         <div className="flex items-center gap-3">
           <span className="text-2xl select-none">✍️</span>
           <div>
@@ -263,9 +263,12 @@ export default function Home() {
         )}
       </header>
 
+      {/* Espaceur pour le header fixe */}
+      <div style={{ height: '56px', flexShrink: 0 }} />
+
       {/* ─── Upload ─── */}
       {phase === 'upload' && (
-        <main className="flex-1 flex flex-col items-center justify-center p-8 max-w-2xl mx-auto w-full">
+        <main className="flex-1 flex flex-col items-center justify-center p-8 max-w-2xl mx-auto w-full overflow-y-auto">
           <div className="text-center mb-8">
             <h2 className="text-3xl font-bold text-gray-900 mb-3">Corrigez votre document</h2>
             <p className="text-gray-500 text-base">
