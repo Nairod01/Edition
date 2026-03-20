@@ -453,9 +453,9 @@ export default function Home() {
 
           {/* Split view */}
           <div className="flex-1 flex overflow-hidden min-h-0">
-            {/* Panneau gauche : texte annoté OU visionneuse PDF annotée */}
-            <div className="flex-1 overflow-hidden min-h-0">
-              {viewMode === 'pdf' && pdfUrl ? (
+            {viewMode === 'pdf' && pdfUrl ? (
+              /* Mode PDF : visionneuse pleine largeur avec panneau corrections intégré */
+              <div className="flex-1 overflow-hidden min-h-0">
                 <PdfAnnotatedViewer
                   pdfUrl={pdfUrl}
                   corrections={result.corrections}
@@ -464,30 +464,34 @@ export default function Home() {
                   onSelect={handleSelect}
                   onToggleDone={handleToggleDone}
                 />
-              ) : (
-                <div className="h-full overflow-y-auto p-6 lg:p-10">
-                  <AnnotatedText
-                    text={result.extractedText}
-                    formattedHtml={result.formattedHtml}
-                    pageOffsets={result.pageOffsets}
+              </div>
+            ) : (
+              /* Mode texte annoté : texte + panneau corrections séparé */
+              <>
+                <div className="flex-1 overflow-hidden min-h-0">
+                  <div className="h-full overflow-y-auto p-6 lg:p-10">
+                    <AnnotatedText
+                      text={result.extractedText}
+                      formattedHtml={result.formattedHtml}
+                      pageOffsets={result.pageOffsets}
+                      corrections={result.corrections}
+                      selectedId={selectedId}
+                      onSelect={handleSelect}
+                    />
+                  </div>
+                </div>
+
+                <aside className="w-80 xl:w-96 border-l border-gray-200 bg-white overflow-y-auto flex-shrink-0">
+                  <CorrectionPanel
                     corrections={result.corrections}
                     selectedId={selectedId}
                     onSelect={handleSelect}
+                    doneIds={doneIds}
+                    onToggleDone={handleToggleDone}
                   />
-                </div>
-              )}
-            </div>
-
-            {/* Panneau corrections */}
-            <aside className="w-80 xl:w-96 border-l border-gray-200 bg-white overflow-y-auto flex-shrink-0">
-              <CorrectionPanel
-                corrections={result.corrections}
-                selectedId={selectedId}
-                onSelect={handleSelect}
-                doneIds={doneIds}
-                onToggleDone={handleToggleDone}
-              />
-            </aside>
+                </aside>
+              </>
+            )}
           </div>
 
           {/* Barre d'export */}
