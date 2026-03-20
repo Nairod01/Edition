@@ -5,18 +5,20 @@ import { Document, Page, pdfjs } from 'react-pdf'
 import type { TextContent, TextItem } from 'react-pdf'
 import 'react-pdf/dist/Page/TextLayer.css'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
-import type { Correction } from '@/lib/types'
+import type { Correction, Category } from '@/lib/types'
 
 // Configurer le worker PDF.js via CDN (évite les problèmes de bundling Next.js)
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
 
-// ── Couleurs par catégorie ─────────────────────────────────────────────────
+// ── Couleurs annotations PDF ────────────────────────────────────────────────
 
 const CATEGORY_BG: Record<string, string> = {
   orthographe: 'rgba(239,68,68,0.25)',
   grammaire: 'rgba(249,115,22,0.25)',
   typographie: 'rgba(59,130,246,0.25)',
   style: 'rgba(34,197,94,0.25)',
+  coherence: 'rgba(168,85,247,0.25)',
+  renvoi: 'rgba(234,179,8,0.25)',
 }
 
 const CATEGORY_SELECTED_BG: Record<string, string> = {
@@ -24,6 +26,8 @@ const CATEGORY_SELECTED_BG: Record<string, string> = {
   grammaire: 'rgba(249,115,22,0.55)',
   typographie: 'rgba(59,130,246,0.55)',
   style: 'rgba(34,197,94,0.55)',
+  coherence: 'rgba(168,85,247,0.55)',
+  renvoi: 'rgba(234,179,8,0.55)',
 }
 
 const CATEGORY_DOT: Record<string, string> = {
@@ -31,6 +35,8 @@ const CATEGORY_DOT: Record<string, string> = {
   grammaire: '#f97316',
   typographie: '#3b82f6',
   style: '#22c55e',
+  coherence: '#a855f7',
+  renvoi: '#eab308',
 }
 
 const CATEGORY_LABEL: Record<string, string> = {
@@ -38,6 +44,28 @@ const CATEGORY_LABEL: Record<string, string> = {
   grammaire: 'Gram.',
   typographie: 'Typo.',
   style: 'Style',
+  coherence: 'Cohér.',
+  renvoi: 'Renvoi',
+}
+
+// ── Config panneau corrections ──────────────────────────────────────────────
+
+const PANEL_CATEGORY_CONFIG: Record<
+  Category,
+  { label: string; dot: string; badge: string; border: string }
+> = {
+  orthographe: { label: 'Orthographe', dot: 'bg-red-500', badge: 'bg-red-50 text-red-700 border border-red-200', border: 'border-l-red-400' },
+  grammaire: { label: 'Grammaire', dot: 'bg-orange-500', badge: 'bg-orange-50 text-orange-700 border border-orange-200', border: 'border-l-orange-400' },
+  typographie: { label: 'Typographie', dot: 'bg-blue-500', badge: 'bg-blue-50 text-blue-700 border border-blue-200', border: 'border-l-blue-400' },
+  style: { label: 'Style', dot: 'bg-green-500', badge: 'bg-green-50 text-green-700 border border-green-200', border: 'border-l-green-400' },
+  coherence: { label: 'Cohérence', dot: 'bg-purple-500', badge: 'bg-purple-50 text-purple-700 border border-purple-200', border: 'border-l-purple-400' },
+  renvoi: { label: 'Renvoi', dot: 'bg-yellow-500', badge: 'bg-yellow-50 text-yellow-700 border border-yellow-200', border: 'border-l-yellow-400' },
+}
+
+const SEVERITY_LABELS: Record<string, { label: string; color: string }> = {
+  error: { label: 'Erreur', color: 'text-red-600' },
+  warning: { label: 'Attention', color: 'text-orange-500' },
+  suggestion: { label: 'Suggestion', color: 'text-blue-500' },
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -49,11 +77,6 @@ function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;')
 }
 
-/**
- * Trouve les positions [start, end] du snippet dans str.
- * 1. Essai direct insensible à la casse
- * 2. Repli regex avec espaces flexibles
- */
 function findSnippet(str: string, snippet: string): [number, number] | null {
   if (!snippet.trim()) return null
 
@@ -85,11 +108,8 @@ interface ItemRange {
 }
 
 interface PageTextData {
-  /** Position de chaque item (index → {start, end}) dans le texte complet */
   itemRanges: ItemRange[]
-  /** Texte complet de la page (concaténation de tous les items) */
   fullText: string
-  /** Position du snippet dans le texte complet, par correctionId */
   snippetPositions: Map<string, [number, number] | null>
 }
 
@@ -106,7 +126,6 @@ function buildTextRenderer(
     const matches: Array<{ start: number; end: number; correction: Correction }> = []
 
     if (pageTextData) {
-      // ── Correspondance multi-items via le texte complet de la page ──────
       const itemRange = pageTextData.itemRanges[itemIndex]
       if (itemRange) {
         for (const corr of pageCorrections) {
@@ -114,17 +133,14 @@ function buildTextRenderer(
           if (!pos) continue
           const [snipStart, snipEnd] = pos
 
-          // Ignorer si le snippet ne chevauche pas cet item
           if (snipEnd <= itemRange.start || snipStart >= itemRange.end) continue
 
-          // Calculer l'overlap dans le référentiel de l'item
           const start = Math.max(snipStart, itemRange.start) - itemRange.start
           const end = Math.min(snipEnd, itemRange.end) - itemRange.start
           matches.push({ start, end, correction: corr })
         }
       }
     } else {
-      // ── Fallback : correspondance directe dans l'item (snippets courts) ──
       for (const corr of pageCorrections) {
         const pos = findSnippet(str, corr.snippet)
         if (pos) matches.push({ start: pos[0], end: pos[1], correction: corr })
@@ -157,6 +173,106 @@ function buildTextRenderer(
   }
 }
 
+// ── Carte correction (panneau aligné) ────────────────────────────────────────
+
+function CorrectionCard({
+  correction,
+  isSelected,
+  isDone,
+  onSelect,
+  onToggleDone,
+}: {
+  correction: Correction
+  isSelected: boolean
+  isDone: boolean
+  onSelect: (id: string) => void
+  onToggleDone: (id: string) => void
+}) {
+  const cfg = PANEL_CATEGORY_CONFIG[correction.category]
+  const sev = SEVERITY_LABELS[correction.severity]
+  return (
+    <div
+      id={`cp-${correction.id}`}
+      className={`
+        px-3 py-2.5 rounded-lg border-l-4 cursor-pointer
+        transition-colors duration-100
+        ${cfg.border}
+        ${isDone ? 'opacity-50' : ''}
+        ${isSelected ? 'bg-blue-50 border border-blue-100' : 'bg-white border border-gray-100 hover:bg-gray-50'}
+      `}
+      onClick={() => onSelect(correction.id)}
+    >
+      <div className="flex items-center gap-2 mb-1 flex-wrap">
+        <span className={`text-xs font-medium px-1.5 py-0.5 rounded-full ${cfg.badge}`}>
+          {cfg.label}
+        </span>
+        <span className={`text-xs ${sev.color}`}>{sev.label}</span>
+        <button
+          className={`ml-auto flex items-center justify-center w-5 h-5 rounded-full border transition-colors duration-100 ${
+            isDone
+              ? 'bg-green-500 border-green-500 text-white'
+              : 'border-gray-300 text-transparent hover:border-green-400 hover:text-green-400'
+          }`}
+          title={isDone ? 'Marquer comme non faite' : 'Marquer comme faite'}
+          onClick={(e) => { e.stopPropagation(); onToggleDone(correction.id) }}
+        >
+          <CheckIcon className="w-3 h-3" />
+        </button>
+      </div>
+
+      <div className={`flex items-center gap-1.5 mb-1 flex-wrap ${isDone ? 'line-through' : ''}`}>
+        <span className="line-through text-red-500 text-xs font-mono bg-red-50 px-1 rounded">
+          {correction.snippet}
+        </span>
+        <span className="text-gray-400 text-xs">→</span>
+        <span className="text-green-700 font-semibold text-xs font-mono bg-green-50 px-1 rounded">
+          {correction.corrected}
+        </span>
+      </div>
+
+      <div className="text-xs font-semibold text-gray-800 mb-0.5">{correction.rule}</div>
+      <div className="text-xs text-gray-500 leading-relaxed">{correction.explanation}</div>
+    </div>
+  )
+}
+
+function CheckIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 12 12"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <polyline points="2,6 5,9 10,3" />
+    </svg>
+  )
+}
+
+function FilterBtn({
+  label,
+  active,
+  onClick,
+}: {
+  label: string
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`text-xs px-2 py-0.5 rounded-full font-medium transition-colors duration-100 ${
+        active ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+      }`}
+    >
+      {label}
+    </button>
+  )
+}
+
 // ── Composant principal ────────────────────────────────────────────────────
 
 interface Props {
@@ -177,22 +293,21 @@ export function PdfAnnotatedViewer({
   onToggleDone,
 }: Props) {
   const [numPages, setNumPages] = useState(0)
-  const [pageWidth, setPageWidth] = useState(700)
+  const [pageWidth, setPageWidth] = useState(600)
+  const [filter, setFilter] = useState<Category | 'all'>('all')
+  const [hideDone, setHideDone] = useState(false)
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map())
   const containerRef = useRef<HTMLDivElement>(null)
 
-  // Données de texte pré-calculées par page (peuplées via onGetTextSuccess)
+  // Données de texte pré-calculées par page
   const pageTextsRef = useRef<Map<number, PageTextData>>(new Map())
-  // Compteur pour forcer le re-render du text layer quand une page charge
   const [textLoadCount, setTextLoadCount] = useState(0)
 
-  // Corrections actives (non faites)
   const activeCorrections = useMemo(
     () => corrections.filter((c) => !doneIds.has(c.id)),
     [corrections, doneIds]
   )
 
-  // Regrouper les corrections par page
   const corrsByPage = useMemo(() => {
     const map = new Map<number, Correction[]>()
     for (const c of corrections) {
@@ -203,7 +318,6 @@ export function PdfAnnotatedViewer({
     return map
   }, [corrections])
 
-  // Statistiques par page (non faites)
   const activeCorrsByPage = useMemo(() => {
     const map = new Map<number, number>()
     for (const c of activeCorrections) {
@@ -213,7 +327,15 @@ export function PdfAnnotatedViewer({
     return map
   }, [activeCorrections])
 
-  // Ordre des corrections pour navigation
+  const counts = useMemo(() => ({
+    orthographe: corrections.filter((c) => c.category === 'orthographe').length,
+    grammaire: corrections.filter((c) => c.category === 'grammaire').length,
+    typographie: corrections.filter((c) => c.category === 'typographie').length,
+    style: corrections.filter((c) => c.category === 'style').length,
+    coherence: corrections.filter((c) => c.category === 'coherence').length,
+    renvoi: corrections.filter((c) => c.category === 'renvoi').length,
+  }), [corrections])
+
   const orderedIds = useMemo(() => corrections.map((c) => c.id), [corrections])
   const selectedIdx = selectedId ? orderedIds.indexOf(selectedId) : -1
 
@@ -221,21 +343,20 @@ export function PdfAnnotatedViewer({
   const nextId = selectedIdx < orderedIds.length - 1 ? orderedIds[selectedIdx + 1] : null
   const firstActiveId = activeCorrections[0]?.id ?? null
 
-  // Réinitialiser les données de texte quand le PDF change
+  const totalDone = doneIds.size
+  const remaining = corrections.length - totalDone
+
   useEffect(() => {
     pageTextsRef.current.clear()
     setTextLoadCount(0)
   }, [pdfUrl])
 
-  // ── Pré-calcul des positions de snippets via onGetTextSuccess ────────────
   const handleGetTextSuccess = useCallback(
     (pageNum: number, textContent: TextContent) => {
-      // Filtrer pour ne garder que les TextItem (pas les TextMarkedContent)
       const items = textContent.items.filter(
         (item): item is TextItem => 'str' in item
       )
 
-      // Construire le texte complet de la page et l'index de position de chaque item
       const itemRanges: ItemRange[] = []
       let offset = 0
       let fullText = ''
@@ -246,7 +367,6 @@ export function PdfAnnotatedViewer({
         offset += item.str.length
       }
 
-      // Pré-calculer la position de chaque correction dans le texte complet
       const snippetPositions = new Map<string, [number, number] | null>()
       const pageCorrs = corrsByPage.get(pageNum) ?? []
 
@@ -255,14 +375,11 @@ export function PdfAnnotatedViewer({
       }
 
       pageTextsRef.current.set(pageNum, { itemRanges, fullText, snippetPositions })
-
-      // Déclencher un re-render pour que le text layer utilise les nouvelles données
       setTextLoadCount((n) => n + 1)
     },
     [corrsByPage]
   )
 
-  // ── Renderer de texte mémoïsé par page ───────────────────────────────────
   const getTextRenderer = useCallback(
     (pageNum: number) =>
       buildTextRenderer(
@@ -270,19 +387,20 @@ export function PdfAnnotatedViewer({
         corrsByPage.get(pageNum) ?? [],
         selectedId,
       ),
-    // textLoadCount force la recréation quand onGetTextSuccess a fini de charger une page
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [corrsByPage, selectedId, textLoadCount]
   )
 
-  // Scroll vers une correction
   const scrollToCorrection = useCallback(
     (id: string) => {
+      const mark = containerRef.current?.querySelector(`[data-corr-id="${id}"]`)
+      if (mark) {
+        mark.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        return
+      }
       const corr = corrections.find((c) => c.id === id)
       if (!corr) return
-      const page = corr.pageNum ?? 1
-      const ref = pageRefs.current.get(page)
-      ref?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      pageRefs.current.get(corr.pageNum ?? 1)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     },
     [corrections]
   )
@@ -295,12 +413,10 @@ export function PdfAnnotatedViewer({
     [onSelect, scrollToCorrection]
   )
 
-  // Auto-scroll quand la sélection change
   useEffect(() => {
     if (selectedId) scrollToCorrection(selectedId)
   }, [selectedId, scrollToCorrection])
 
-  // Raccourcis clavier
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
@@ -319,7 +435,6 @@ export function PdfAnnotatedViewer({
     return () => window.removeEventListener('keydown', handler)
   }, [prevId, nextId, selectedId, goTo, onToggleDone])
 
-  // Clics sur les annotations dans le canvas PDF
   const handleContainerClick = useCallback(
     (e: React.MouseEvent) => {
       const target = e.target as HTMLElement
@@ -332,25 +447,21 @@ export function PdfAnnotatedViewer({
     [goTo]
   )
 
-  // Adapter la largeur selon le container (réserver ~256px pour le panneau corrections)
+  // Calcul de la largeur de page : réserver 320px pour le panneau + gaps
   useEffect(() => {
     if (!containerRef.current) return
     const obs = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect.width
-      if (w) setPageWidth(Math.min(w - 256, 760))
+      if (w) setPageWidth(Math.min(w - 368, 760))
     })
     obs.observe(containerRef.current)
     return () => obs.disconnect()
   }, [])
 
-  const totalActive = activeCorrections.length
-  const totalDone = doneIds.size
-
   return (
     <div className="flex flex-col h-full bg-gray-50">
       {/* ── Barre de navigation ─────────────────────────────────────────────── */}
       <div className="flex-shrink-0 bg-white border-b border-gray-200 px-4 py-2 flex items-center gap-3 flex-wrap shadow-sm">
-        {/* Prev / Next correction */}
         <button
           onClick={() => prevId && goTo(prevId)}
           disabled={!prevId}
@@ -382,7 +493,6 @@ export function PdfAnnotatedViewer({
           Suivante →
         </button>
 
-        {/* Sauter à la 1re correction active */}
         {firstActiveId && firstActiveId !== selectedId && (
           <button
             onClick={() => goTo(firstActiveId)}
@@ -392,7 +502,6 @@ export function PdfAnnotatedViewer({
           </button>
         )}
 
-        {/* Marquer la correction sélectionnée */}
         {selectedId && (
           <button
             onClick={() => onToggleDone(selectedId)}
@@ -407,7 +516,6 @@ export function PdfAnnotatedViewer({
           </button>
         )}
 
-        {/* Légende raccourcis */}
         <div className="ml-auto hidden md:flex items-center gap-2 text-xs text-gray-400">
           <span>← → navigation</span>
           <span>·</span>
@@ -415,10 +523,55 @@ export function PdfAnnotatedViewer({
         </div>
       </div>
 
-      {/* ── Document PDF ────────────────────────────────────────────────────── */}
+      {/* ── Barre de filtres ─────────────────────────────────────────────────── */}
+      <div className="flex-shrink-0 bg-white border-b border-gray-200 px-4 py-2">
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-xs font-semibold text-gray-700">
+            {corrections.length} correction{corrections.length > 1 ? 's' : ''}
+          </span>
+          {totalDone > 0 && (
+            <span className="text-xs text-green-600 font-medium flex items-center gap-1">
+              <CheckIcon className="w-3 h-3" />
+              {totalDone} faite{totalDone > 1 ? 's' : ''}
+              {remaining > 0 && (
+                <span className="text-gray-400 font-normal">
+                  {' '}· {remaining} restante{remaining > 1 ? 's' : ''}
+                </span>
+              )}
+            </span>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-1">
+          <FilterBtn
+            label={`Tout (${corrections.length})`}
+            active={filter === 'all'}
+            onClick={() => setFilter('all')}
+          />
+          {(Object.entries(PANEL_CATEGORY_CONFIG) as [Category, typeof PANEL_CATEGORY_CONFIG[Category]][]).map(
+            ([cat, cfg]) =>
+              counts[cat] > 0 ? (
+                <FilterBtn
+                  key={cat}
+                  label={`${cfg.label} (${counts[cat]})`}
+                  active={filter === cat}
+                  onClick={() => setFilter(cat)}
+                />
+              ) : null
+          )}
+          {totalDone > 0 && (
+            <FilterBtn
+              label={hideDone ? `Afficher faites (${totalDone})` : 'Masquer faites'}
+              active={hideDone}
+              onClick={() => setHideDone((v) => !v)}
+            />
+          )}
+        </div>
+      </div>
+
+      {/* ── Document PDF + Corrections alignées ─────────────────────────────── */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-y-auto px-6 py-4"
+        className="flex-1 overflow-y-auto px-4 py-4"
         onClick={handleContainerClick}
       >
         <Document
@@ -441,6 +594,11 @@ export function PdfAnnotatedViewer({
             const pageActive = activeCorrsByPage.get(pageNum) ?? 0
             const pageDone = pageCorrs.length - pageActive
 
+            // Corrections filtrées pour ce panneau
+            const panelCorrs = pageCorrs
+              .filter((c) => filter === 'all' || c.category === filter)
+              .filter((c) => !hideDone || !doneIds.has(c.id))
+
             return (
               <div
                 key={pageNum}
@@ -448,7 +606,7 @@ export function PdfAnnotatedViewer({
                   if (el) pageRefs.current.set(pageNum, el)
                   else pageRefs.current.delete(pageNum)
                 }}
-                className="flex items-start gap-4"
+                className="flex items-start gap-6"
               >
                 {/* ── Page PDF ── */}
                 <div className="flex-shrink-0">
@@ -468,7 +626,7 @@ export function PdfAnnotatedViewer({
                   <div className="mt-1.5 flex items-center gap-2 text-xs text-gray-400 px-1">
                     <span>page {pageNum}</span>
                     {pageCorrs.length > 0 && <span className="text-gray-300">·</span>}
-                    {(['orthographe', 'grammaire', 'typographie', 'style'] as const).map((cat) => {
+                    {(['orthographe', 'grammaire', 'typographie', 'style', 'coherence', 'renvoi'] as const).map((cat) => {
                       const n = pageCorrs.filter(
                         (c) => c.category === cat && !doneIds.has(c.id)
                       ).length
@@ -492,77 +650,22 @@ export function PdfAnnotatedViewer({
                   </div>
                 </div>
 
-                {/* ── Corrections de cette page ── */}
-                {pageCorrs.length > 0 && (
-                  <div className="w-56 flex-shrink-0 flex flex-col gap-2 pt-1">
-                    {pageCorrs.map((c) => {
-                      const isDone = doneIds.has(c.id)
-                      const isSelected = c.id === selectedId
-                      return (
-                        <button
-                          key={c.id}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            goTo(c.id)
-                          }}
-                          className={`w-full text-left px-2.5 py-2 rounded-lg border text-xs transition-colors ${
-                            isDone ? 'opacity-40' : ''
-                          } ${
-                            isSelected
-                              ? 'border-gray-400 bg-gray-50 shadow-sm'
-                              : 'border-gray-200 bg-white hover:bg-gray-50'
-                          }`}
-                        >
-                          {/* Catégorie */}
-                          <div className="flex items-center gap-1 mb-1">
-                            <span
-                              className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                              style={{
-                                backgroundColor: CATEGORY_DOT[c.category] ?? '#888',
-                              }}
-                            />
-                            <span className="text-gray-400 uppercase text-[10px] tracking-wide leading-none">
-                              {CATEGORY_LABEL[c.category] ?? c.category}
-                            </span>
-                            {isDone && (
-                              <span className="ml-auto text-green-500 text-[10px]">✓</span>
-                            )}
-                          </div>
-                          {/* Texte fautif */}
-                          <div className="text-gray-700 font-medium truncate leading-snug">
-                            {c.snippet}
-                          </div>
-                          {/* Suggestion */}
-                          {c.corrected && (
-                            <div className="text-gray-400 truncate leading-snug mt-0.5">
-                              → {c.corrected}
-                            </div>
-                          )}
-                          {/* Règle courte */}
-                          {c.rule && (
-                            <div className="text-gray-400 truncate text-[10px] mt-0.5 italic">
-                              {c.rule}
-                            </div>
-                          )}
-                          {/* Bouton marquer faite */}
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              onToggleDone(c.id)
-                            }}
-                            className={`mt-1.5 w-full text-center text-[10px] py-0.5 rounded border transition-colors ${
-                              isDone
-                                ? 'border-green-200 text-green-600 bg-green-50'
-                                : 'border-gray-200 text-gray-400 hover:bg-gray-100'
-                            }`}
-                          >
-                            {isDone ? '✓ Faite' : 'Marquer faite'}
-                          </button>
-                        </button>
-                      )
-                    })}
-                  </div>
-                )}
+                {/* ── Panneau corrections aligné ── */}
+                <div className="w-80 flex-shrink-0 flex flex-col gap-2 pt-1">
+                  {panelCorrs.map((correction) => (
+                    <CorrectionCard
+                      key={correction.id}
+                      correction={correction}
+                      isSelected={correction.id === selectedId}
+                      isDone={doneIds.has(correction.id)}
+                      onSelect={onSelect}
+                      onToggleDone={onToggleDone}
+                    />
+                  ))}
+                  {panelCorrs.length === 0 && pageCorrs.length > 0 && hideDone && (
+                    <p className="text-xs text-gray-400 italic pt-1">Toutes faites ✓</p>
+                  )}
+                </div>
               </div>
             )
           })}

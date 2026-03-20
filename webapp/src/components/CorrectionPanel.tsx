@@ -31,6 +31,18 @@ const CATEGORY_CONFIG: Record<
     badge: 'bg-green-50 text-green-700 border border-green-200',
     border: 'border-l-green-400',
   },
+  coherence: {
+    label: 'Cohérence',
+    dot: 'bg-purple-500',
+    badge: 'bg-purple-50 text-purple-700 border border-purple-200',
+    border: 'border-l-purple-400',
+  },
+  renvoi: {
+    label: 'Renvoi',
+    dot: 'bg-yellow-500',
+    badge: 'bg-yellow-50 text-yellow-700 border border-yellow-200',
+    border: 'border-l-yellow-400',
+  },
 }
 
 const SEVERITY_LABELS: Record<string, { label: string; color: string }> = {
@@ -62,6 +74,8 @@ export function CorrectionPanel({
     grammaire: corrections.filter((c) => c.category === 'grammaire').length,
     typographie: corrections.filter((c) => c.category === 'typographie').length,
     style: corrections.filter((c) => c.category === 'style').length,
+    coherence: corrections.filter((c) => c.category === 'coherence').length,
+    renvoi: corrections.filter((c) => c.category === 'renvoi').length,
   }
 
   const doneCount = doneIds.size
@@ -142,7 +156,7 @@ export function CorrectionPanel({
         </div>
       </div>
 
-      {/* Liste */}
+      {/* Liste groupée par page */}
       <div className="flex-1 overflow-y-auto">
         {filtered.length === 0 ? (
           <div className="p-8 text-center text-gray-400 text-sm">
@@ -151,73 +165,152 @@ export function CorrectionPanel({
               : 'Aucune correction dans cette catégorie'}
           </div>
         ) : (
-          filtered.map((correction) => {
-            const cfg = CATEGORY_CONFIG[correction.category]
-            const sev = SEVERITY_LABELS[correction.severity]
-            const isSelected = correction.id === selectedId
-            const isDone = doneIds.has(correction.id)
-
-            return (
-              <div
-                key={correction.id}
-                id={`correction-${correction.id}`}
-                className={`
-                  px-4 py-3 border-b border-gray-100 cursor-pointer
-                  transition-colors duration-100 border-l-4
-                  ${cfg.border}
-                  ${isDone ? 'opacity-50' : ''}
-                  ${isSelected ? 'bg-gray-50' : 'hover:bg-gray-50/70'}
-                `}
-                onClick={() => onSelect(correction.id)}
-              >
-                {/* Badge catégorie + sévérité + page + coche */}
-                <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                  <span className={`text-xs font-medium px-1.5 py-0.5 rounded-full ${cfg.badge}`}>
-                    {cfg.label}
-                  </span>
-                  <span className={`text-xs ${sev.color}`}>{sev.label}</span>
-                  {correction.pageNum !== undefined && (
-                    <span className="text-xs text-gray-400 font-mono">p.&nbsp;{correction.pageNum}</span>
-                  )}
-                  {/* Bouton coche — stoppe la propagation pour ne pas sélectionner */}
-                  <button
-                    className={`ml-auto flex items-center justify-center w-5 h-5 rounded-full border transition-colors duration-100 ${
-                      isDone
-                        ? 'bg-green-500 border-green-500 text-white'
-                        : 'border-gray-300 text-transparent hover:border-green-400 hover:text-green-400'
-                    }`}
-                    title={isDone ? 'Marquer comme non faite' : 'Marquer comme faite'}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onToggleDone(correction.id)
-                    }}
-                    aria-label={isDone ? 'Correction faite' : 'Marquer comme faite'}
-                  >
-                    <CheckIcon className="w-3 h-3" />
-                  </button>
-                </div>
-
-                {/* Original → Corrigé */}
-                <div className={`flex items-center gap-1.5 mb-1.5 flex-wrap ${isDone ? 'line-through' : ''}`}>
-                  <span className="line-through text-red-500 text-sm font-mono bg-red-50 px-1 rounded">
-                    {correction.snippet}
-                  </span>
-                  <span className="text-gray-400 text-xs">→</span>
-                  <span className="text-green-700 font-semibold text-sm font-mono bg-green-50 px-1 rounded">
-                    {correction.corrected}
-                  </span>
-                </div>
-
-                {/* Règle */}
-                <div className="text-sm font-semibold text-gray-800 mb-1">{correction.rule}</div>
-
-                {/* Explication */}
-                <div className="text-xs text-gray-500 leading-relaxed">{correction.explanation}</div>
-              </div>
-            )
-          })
+          <GroupedList
+            corrections={filtered}
+            selectedId={selectedId}
+            doneIds={doneIds}
+            onSelect={onSelect}
+            onToggleDone={onToggleDone}
+          />
         )}
       </div>
+    </div>
+  )
+}
+
+function GroupedList({
+  corrections,
+  selectedId,
+  doneIds,
+  onSelect,
+  onToggleDone,
+}: {
+  corrections: Correction[]
+  selectedId: string | null
+  doneIds: Set<string>
+  onSelect: (id: string) => void
+  onToggleDone: (id: string) => void
+}) {
+  // Grouper par page (undefined → pas de page)
+  const hasPaged = corrections.some((c) => c.pageNum !== undefined)
+
+  if (!hasPaged) {
+    return (
+      <>
+        {corrections.map((c) => (
+          <CorrectionCard
+            key={c.id}
+            correction={c}
+            isSelected={c.id === selectedId}
+            isDone={doneIds.has(c.id)}
+            onSelect={onSelect}
+            onToggleDone={onToggleDone}
+          />
+        ))}
+      </>
+    )
+  }
+
+  // Construire les groupes
+  const groups = new Map<number | 'none', Correction[]>()
+  for (const c of corrections) {
+    const key = c.pageNum ?? 'none'
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(c)
+  }
+  const sortedKeys = Array.from(groups.keys()).sort((a, b) => {
+    if (a === 'none') return 1
+    if (b === 'none') return -1
+    return (a as number) - (b as number)
+  })
+
+  return (
+    <>
+      {sortedKeys.map((key) => (
+        <div key={String(key)}>
+          <div className="px-4 py-1.5 bg-gray-50 border-b border-gray-200 sticky top-0 z-[5]">
+            <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">
+              {key === 'none' ? 'Document' : `Page ${key}`}
+            </span>
+          </div>
+          {groups.get(key)!.map((c) => (
+            <CorrectionCard
+              key={c.id}
+              correction={c}
+              isSelected={c.id === selectedId}
+              isDone={doneIds.has(c.id)}
+              onSelect={onSelect}
+              onToggleDone={onToggleDone}
+            />
+          ))}
+        </div>
+      ))}
+    </>
+  )
+}
+
+function CorrectionCard({
+  correction,
+  isSelected,
+  isDone,
+  onSelect,
+  onToggleDone,
+}: {
+  correction: Correction
+  isSelected: boolean
+  isDone: boolean
+  onSelect: (id: string) => void
+  onToggleDone: (id: string) => void
+}) {
+  const cfg = CATEGORY_CONFIG[correction.category]
+  const sev = SEVERITY_LABELS[correction.severity]
+  return (
+    <div
+      id={`correction-${correction.id}`}
+      className={`
+        px-4 py-3 border-b border-gray-100 cursor-pointer
+        transition-colors duration-100 border-l-4
+        ${cfg.border}
+        ${isDone ? 'opacity-50' : ''}
+        ${isSelected ? 'bg-gray-50' : 'hover:bg-gray-50/70'}
+      `}
+      onClick={() => onSelect(correction.id)}
+    >
+      {/* Badge catégorie + sévérité + coche */}
+      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+        <span className={`text-xs font-medium px-1.5 py-0.5 rounded-full ${cfg.badge}`}>
+          {cfg.label}
+        </span>
+        <span className={`text-xs ${sev.color}`}>{sev.label}</span>
+        <button
+          className={`ml-auto flex items-center justify-center w-5 h-5 rounded-full border transition-colors duration-100 ${
+            isDone
+              ? 'bg-green-500 border-green-500 text-white'
+              : 'border-gray-300 text-transparent hover:border-green-400 hover:text-green-400'
+          }`}
+          title={isDone ? 'Marquer comme non faite' : 'Marquer comme faite'}
+          onClick={(e) => { e.stopPropagation(); onToggleDone(correction.id) }}
+        >
+          <CheckIcon className="w-3 h-3" />
+        </button>
+      </div>
+
+      {/* Original → Corrigé */}
+      <div className={`flex items-center gap-1.5 mb-1.5 flex-wrap ${isDone ? 'line-through' : ''}`}>
+        <span className="line-through text-red-500 text-sm font-mono bg-red-50 px-1 rounded">
+          {correction.snippet}
+        </span>
+        <span className="text-gray-400 text-xs">→</span>
+        <span className="text-green-700 font-semibold text-sm font-mono bg-green-50 px-1 rounded">
+          {correction.corrected}
+        </span>
+      </div>
+
+      {/* Règle */}
+      <div className="text-sm font-semibold text-gray-800 mb-1">{correction.rule}</div>
+
+      {/* Explication */}
+      <div className="text-xs text-gray-500 leading-relaxed">{correction.explanation}</div>
     </div>
   )
 }
