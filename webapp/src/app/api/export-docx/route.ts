@@ -176,7 +176,7 @@ async function buildReportDoc(corrections: Correction[], filename: string): Prom
     for (let i = 0; i < items.length; i++) {
       const c = items[i]
 
-      // Numéro + original → corrigé
+      // Numéro + original → corrigé + page
       children.push(
         new Paragraph({
           children: [
@@ -184,6 +184,9 @@ async function buildReportDoc(corrections: Correction[], filename: string): Prom
             new TextRun({ text: c.snippet, strike: true, color: 'C0392B', size: 22 }),
             new TextRun({ text: '  →  ', size: 22, color: '888888' }),
             new TextRun({ text: c.corrected, bold: true, color: '1E8449', size: 22 }),
+            ...(c.pageNum != null
+              ? [new TextRun({ text: `   [p.\u00a0${c.pageNum}]`, size: 20, color: '888888' })]
+              : []),
           ],
           spacing: { before: 200, after: 80 },
         })

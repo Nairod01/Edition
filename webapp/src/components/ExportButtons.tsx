@@ -57,21 +57,21 @@ export function ExportButtons({ result, filename }: Props) {
       grammaire: { label: 'Grammaire', color: '#f97316' },
       typographie: { label: 'Typographie', color: '#3b82f6' },
       style: { label: 'Style', color: '#22c55e' },
+      coherence: { label: 'Cohérence', color: '#a855f7' },
+      renvoi: { label: 'Renvois de page', color: '#ca8a04' },
     } as const
 
-    const byCategory = Object.groupBy
-      ? Object.groupBy(corrections, (c) => c.category)
-      : corrections.reduce(
-          (acc, c) => {
-            if (!acc[c.category]) acc[c.category] = []
-            acc[c.category]!.push(c)
-            return acc
-          },
-          {} as Record<string, typeof corrections>
-        )
+    const byCategory = corrections.reduce(
+      (acc, c) => {
+        if (!acc[c.category]) acc[c.category] = []
+        acc[c.category]!.push(c)
+        return acc
+      },
+      {} as Record<string, typeof corrections>
+    )
 
     const categorySections = (
-      ['orthographe', 'grammaire', 'typographie', 'style'] as const
+      ['orthographe', 'grammaire', 'typographie', 'style', 'coherence', 'renvoi'] as const
     )
       .map((cat) => {
         const items = byCategory[cat]
@@ -81,10 +81,11 @@ export function ExportButtons({ result, filename }: Props) {
           .map(
             (c, i) => `
           <div style="margin-bottom:16px;padding:12px;border-left:4px solid ${cfg.color};background:#fafafa;border-radius:4px">
-            <div style="margin-bottom:6px">
+            <div style="margin-bottom:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
               <span style="font-size:13px;text-decoration:line-through;color:#ef4444;background:#fee2e2;padding:2px 6px;border-radius:3px;font-family:monospace">${escHtml(c.snippet)}</span>
-              <span style="color:#aaa;margin:0 8px">→</span>
+              <span style="color:#aaa">→</span>
               <span style="font-size:13px;color:#166534;font-weight:600;background:#dcfce7;padding:2px 6px;border-radius:3px;font-family:monospace">${escHtml(c.corrected)}</span>
+              ${c.pageNum != null ? `<span style="margin-left:auto;font-size:11px;color:#888;background:#f3f4f6;padding:1px 6px;border-radius:3px;white-space:nowrap">p.\u00a0${c.pageNum}</span>` : ''}
             </div>
             <div style="font-weight:600;color:#1a1a2e;font-size:13px;margin-bottom:4px">${escHtml(c.rule)}</div>
             <div style="font-size:12px;color:#666;line-height:1.5">${escHtml(c.explanation)}</div>

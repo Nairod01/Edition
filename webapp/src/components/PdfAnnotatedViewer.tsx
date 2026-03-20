@@ -145,8 +145,10 @@ function buildTextRenderer(
         : (CATEGORY_BG[correction.category] ?? CATEGORY_BG.style)
       const outline = isSelected ? 'outline:2px solid #1e3a5f;outline-offset:1px;' : ''
       const borderBottom = `border-bottom:2px solid ${CATEGORY_DOT[correction.category] ?? '#888'};`
+      const strikeColor = CATEGORY_DOT[correction.category] ?? '#888'
+      const strikeStyle = `text-decoration:line-through;text-decoration-color:${strikeColor};text-decoration-thickness:2px;`
       const tooltip = escapeHtml(`${correction.rule} → ${correction.corrected}`)
-      html += `<mark style="background:${bg};${borderBottom}${outline}border-radius:2px;padding:0 1px;cursor:pointer;" data-corr-id="${correction.id}" title="${tooltip}">${escapeHtml(str.slice(start, end))}</mark>`
+      html += `<mark style="background:${bg};${borderBottom}${strikeStyle}${outline}border-radius:2px;padding:0 1px;cursor:pointer;" data-corr-id="${correction.id}" title="${tooltip}">${escapeHtml(str.slice(start, end))}</mark>`
       cursor = end
     }
     html += escapeHtml(str.slice(cursor))
@@ -319,15 +321,15 @@ export function PdfAnnotatedViewer({
     const container = pdfColRef.current
     if (!container || pageRefs.current.size === 0) return
 
+    // getBoundingClientRect — plus fiable que la chaîne offsetParent
+    // La différence de positions viewport est indépendante du scroll
+    // (les deux éléments scrollent ensemble dans scrollRef)
+    const containerRect = container.getBoundingClientRect()
+
     const newOffsets = new Map<number, number>()
     Array.from(pageRefs.current.entries()).forEach(([pageNum, el]) => {
-      // Calcul du décalage depuis le haut de pdfColRef (qui est position:relative)
-      let top = 0
-      let curr: HTMLElement | null = el
-      while (curr && curr !== container) {
-        top += curr.offsetTop
-        curr = curr.offsetParent as HTMLElement | null
-      }
+      const elRect = el.getBoundingClientRect()
+      const top = elRect.top - containerRect.top
       newOffsets.set(pageNum, top)
     })
     setPageTopOffsets(new Map(newOffsets))
@@ -342,9 +344,11 @@ export function PdfAnnotatedViewer({
   }, [pdfUrl])
 
   // Mesurer après chaque chargement de page ou redimensionnement
+  // Délai plus long pour les gros documents (toutes les pages doivent être rendues)
   useEffect(() => {
     if (numPages === 0) return
-    const timer = setTimeout(measurePageOffsets, 150)
+    const delay = numPages > 20 ? 400 : 150
+    const timer = setTimeout(measurePageOffsets, delay)
     return () => clearTimeout(timer)
   }, [numPages, pageWidth, textLoadCount, measurePageOffsets])
 

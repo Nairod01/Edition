@@ -135,22 +135,32 @@ export async function POST(request: NextRequest) {
 
         let allRaw: Omit<Correction, 'id'>[] = []
 
-        for (let i = 0; i < chunks.length; i++) {
-          const percent = 25 + Math.round(((i + 1) / chunks.length) * 65)
-          const chunkLabel =
-            chunks.length > 1 ? `partie ${i + 1}/${chunks.length}` : undefined
-
-          send({
-            type: 'progress',
-            message: chunkLabel
-              ? `Analyse linguistique — ${chunkLabel}…`
+        send({
+          type: 'progress',
+          message:
+            chunks.length > 1
+              ? `Analyse linguistique — ${chunks.length} parties en parallèle…`
               : 'Analyse linguistique en cours…',
-            percent,
-          })
+          percent: 30,
+        })
 
-          const chunkCorrections = await analyzeChunk(client, chunks[i], chunkLabel)
-          allRaw.push(...chunkCorrections)
-        }
+        // Analyse toutes les parties en parallèle pour les grands documents
+        let completed = 0
+        const chunkResults = await Promise.all(
+          chunks.map(async (chunk, i) => {
+            const label = chunks.length > 1 ? `partie ${i + 1}/${chunks.length}` : undefined
+            const result = await analyzeChunk(client, chunk, label)
+            completed++
+            const percent = 30 + Math.round((completed / chunks.length) * 55)
+            send({
+              type: 'progress',
+              message: `Analyse linguistique — ${completed}/${chunks.length} parties traitées…`,
+              percent,
+            })
+            return result
+          })
+        )
+        for (const res of chunkResults) allRaw.push(...res)
 
         send({ type: 'progress', message: 'Finalisation…', percent: 95 })
 
