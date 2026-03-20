@@ -7,7 +7,6 @@ import 'react-pdf/dist/Page/TextLayer.css'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import type { Correction, Category } from '@/lib/types'
 
-// Configurer le worker PDF.js via CDN (évite les problèmes de bundling Next.js)
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
 
 // ── Couleurs annotations PDF ────────────────────────────────────────────────
@@ -39,7 +38,7 @@ const CATEGORY_DOT: Record<string, string> = {
   renvoi: '#eab308',
 }
 
-const CATEGORY_LABEL: Record<string, string> = {
+const CATEGORY_LABEL_SHORT: Record<string, string> = {
   orthographe: 'Orth.',
   grammaire: 'Gram.',
   typographie: 'Typo.',
@@ -79,41 +78,26 @@ function escapeHtml(text: string): string {
 
 function findSnippet(str: string, snippet: string): [number, number] | null {
   if (!snippet.trim()) return null
-
   const lowerStr = str.toLowerCase()
   const lowerSnip = snippet.toLowerCase()
   const directIdx = lowerStr.indexOf(lowerSnip)
   if (directIdx !== -1) return [directIdx, directIdx + snippet.length]
-
   try {
-    const escaped = snippet
-      .trim()
-      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      .replace(/\s+/g, '\\s+')
+    const escaped = snippet.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
     const regex = new RegExp(escaped, 'i')
     const m = str.match(regex)
     if (m && m.index !== undefined) return [m.index, m.index + m[0].length]
-  } catch {
-    // regex invalide → on abandonne
-  }
-
+  } catch { /* ignore */ }
   return null
 }
 
-// ── Données de texte pré-calculées par page ───────────────────────────────
-
-interface ItemRange {
-  start: number
-  end: number
-}
+interface ItemRange { start: number; end: number }
 
 interface PageTextData {
   itemRanges: ItemRange[]
   fullText: string
   snippetPositions: Map<string, [number, number] | null>
 }
-
-// ── Renderer de texte utilisant les données pré-calculées ─────────────────
 
 function buildTextRenderer(
   pageTextData: PageTextData | undefined,
@@ -132,12 +116,12 @@ function buildTextRenderer(
           const pos = pageTextData.snippetPositions.get(corr.id)
           if (!pos) continue
           const [snipStart, snipEnd] = pos
-
           if (snipEnd <= itemRange.start || snipStart >= itemRange.end) continue
-
-          const start = Math.max(snipStart, itemRange.start) - itemRange.start
-          const end = Math.min(snipEnd, itemRange.end) - itemRange.start
-          matches.push({ start, end, correction: corr })
+          matches.push({
+            start: Math.max(snipStart, itemRange.start) - itemRange.start,
+            end: Math.min(snipEnd, itemRange.end) - itemRange.start,
+            correction: corr,
+          })
         }
       }
     } else {
@@ -148,7 +132,6 @@ function buildTextRenderer(
     }
 
     if (matches.length === 0) return str
-
     matches.sort((a, b) => a.start - b.start)
 
     let html = ''
@@ -156,7 +139,6 @@ function buildTextRenderer(
     for (const { start, end, correction } of matches) {
       if (start < cursor) continue
       html += escapeHtml(str.slice(cursor, start))
-
       const isSelected = correction.id === selectedId
       const bg = isSelected
         ? (CATEGORY_SELECTED_BG[correction.category] ?? CATEGORY_SELECTED_BG.style)
@@ -164,7 +146,6 @@ function buildTextRenderer(
       const outline = isSelected ? 'outline:2px solid #1e3a5f;outline-offset:1px;' : ''
       const borderBottom = `border-bottom:2px solid ${CATEGORY_DOT[correction.category] ?? '#888'};`
       const tooltip = escapeHtml(`${correction.rule} → ${correction.corrected}`)
-
       html += `<mark style="background:${bg};${borderBottom}${outline}border-radius:2px;padding:0 1px;cursor:pointer;" data-corr-id="${correction.id}" title="${tooltip}">${escapeHtml(str.slice(start, end))}</mark>`
       cursor = end
     }
@@ -173,7 +154,7 @@ function buildTextRenderer(
   }
 }
 
-// ── Carte correction (panneau aligné) ────────────────────────────────────────
+// ── Carte correction ────────────────────────────────────────────────────────
 
 function CorrectionCard({
   correction,
@@ -194,11 +175,11 @@ function CorrectionCard({
     <div
       id={`cp-${correction.id}`}
       className={`
-        px-3 py-2.5 rounded-lg border-l-4 cursor-pointer
+        px-3 py-2.5 border-b border-gray-100 cursor-pointer border-l-4
         transition-colors duration-100
         ${cfg.border}
         ${isDone ? 'opacity-50' : ''}
-        ${isSelected ? 'bg-blue-50 border border-blue-100' : 'bg-white border border-gray-100 hover:bg-gray-50'}
+        ${isSelected ? 'bg-blue-50' : 'bg-white hover:bg-gray-50'}
       `}
       onClick={() => onSelect(correction.id)}
     >
@@ -219,7 +200,6 @@ function CorrectionCard({
           <CheckIcon className="w-3 h-3" />
         </button>
       </div>
-
       <div className={`flex items-center gap-1.5 mb-1 flex-wrap ${isDone ? 'line-through' : ''}`}>
         <span className="line-through text-red-500 text-xs font-mono bg-red-50 px-1 rounded">
           {correction.snippet}
@@ -229,7 +209,6 @@ function CorrectionCard({
           {correction.corrected}
         </span>
       </div>
-
       <div className="text-xs font-semibold text-gray-800 mb-0.5">{correction.rule}</div>
       <div className="text-xs text-gray-500 leading-relaxed">{correction.explanation}</div>
     </div>
@@ -238,29 +217,13 @@ function CorrectionCard({
 
 function CheckIcon({ className }: { className?: string }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 12 12"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
+    <svg className={className} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="2,6 5,9 10,3" />
     </svg>
   )
 }
 
-function FilterBtn({
-  label,
-  active,
-  onClick,
-}: {
-  label: string
-  active: boolean
-  onClick: () => void
-}) {
+function FilterBtn({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
@@ -296,12 +259,19 @@ export function PdfAnnotatedViewer({
   const [pageWidth, setPageWidth] = useState(600)
   const [filter, setFilter] = useState<Category | 'all'>('all')
   const [hideDone, setHideDone] = useState(false)
-  const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map())
-  const containerRef = useRef<HTMLDivElement>(null)
 
-  // Données de texte pré-calculées par page
+  // Refs pour layout
+  const scrollRef = useRef<HTMLDivElement>(null)       // conteneur scroll unique
+  const pdfColRef = useRef<HTMLDivElement>(null)        // colonne PDF (position:relative)
+  const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map())
+
+  // Texte PDF pré-calculé par page
   const pageTextsRef = useRef<Map<number, PageTextData>>(new Map())
   const [textLoadCount, setTextLoadCount] = useState(0)
+
+  // Offsets Y de chaque page dans la colonne PDF + hauteur totale du doc
+  const [pageTopOffsets, setPageTopOffsets] = useState<Map<number, number>>(new Map())
+  const [docHeight, setDocHeight] = useState(0)
 
   const activeCorrections = useMemo(
     () => corrections.filter((c) => !doneIds.has(c.id)),
@@ -338,42 +308,82 @@ export function PdfAnnotatedViewer({
 
   const orderedIds = useMemo(() => corrections.map((c) => c.id), [corrections])
   const selectedIdx = selectedId ? orderedIds.indexOf(selectedId) : -1
-
   const prevId = selectedIdx > 0 ? orderedIds[selectedIdx - 1] : null
   const nextId = selectedIdx < orderedIds.length - 1 ? orderedIds[selectedIdx + 1] : null
   const firstActiveId = activeCorrections[0]?.id ?? null
-
   const totalDone = doneIds.size
   const remaining = corrections.length - totalDone
+
+  // ── Mesure des positions Y des pages ─────────────────────────────────────
+  const measurePageOffsets = useCallback(() => {
+    const container = pdfColRef.current
+    if (!container || pageRefs.current.size === 0) return
+
+    const newOffsets = new Map<number, number>()
+    Array.from(pageRefs.current.entries()).forEach(([pageNum, el]) => {
+      // Calcul du décalage depuis le haut de pdfColRef (qui est position:relative)
+      let top = 0
+      let curr: HTMLElement | null = el
+      while (curr && curr !== container) {
+        top += curr.offsetTop
+        curr = curr.offsetParent as HTMLElement | null
+      }
+      newOffsets.set(pageNum, top)
+    })
+    setPageTopOffsets(new Map(newOffsets))
+    setDocHeight(container.scrollHeight)
+  }, [])
 
   useEffect(() => {
     pageTextsRef.current.clear()
     setTextLoadCount(0)
+    setPageTopOffsets(new Map())
+    setDocHeight(0)
   }, [pdfUrl])
 
+  // Mesurer après chaque chargement de page ou redimensionnement
+  useEffect(() => {
+    if (numPages === 0) return
+    const timer = setTimeout(measurePageOffsets, 150)
+    return () => clearTimeout(timer)
+  }, [numPages, pageWidth, textLoadCount, measurePageOffsets])
+
+  // Observer les changements de taille de la colonne PDF
+  useEffect(() => {
+    if (!pdfColRef.current) return
+    const obs = new ResizeObserver(measurePageOffsets)
+    obs.observe(pdfColRef.current)
+    return () => obs.disconnect()
+  }, [measurePageOffsets])
+
+  // ── Calcul largeur de page ────────────────────────────────────────────────
+  // Réserver 320px pour le panneau corrections + padding
+  useEffect(() => {
+    if (!scrollRef.current) return
+    const obs = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width
+      if (w) setPageWidth(Math.min(w - 320 - 48, 760))
+    })
+    obs.observe(scrollRef.current)
+    return () => obs.disconnect()
+  }, [])
+
+  // ── Texte PDF ─────────────────────────────────────────────────────────────
   const handleGetTextSuccess = useCallback(
     (pageNum: number, textContent: TextContent) => {
-      const items = textContent.items.filter(
-        (item): item is TextItem => 'str' in item
-      )
-
+      const items = textContent.items.filter((item): item is TextItem => 'str' in item)
       const itemRanges: ItemRange[] = []
       let offset = 0
       let fullText = ''
-
       for (const item of items) {
         itemRanges.push({ start: offset, end: offset + item.str.length })
         fullText += item.str
         offset += item.str.length
       }
-
       const snippetPositions = new Map<string, [number, number] | null>()
-      const pageCorrs = corrsByPage.get(pageNum) ?? []
-
-      for (const corr of pageCorrs) {
+      for (const corr of corrsByPage.get(pageNum) ?? []) {
         snippetPositions.set(corr.id, findSnippet(fullText, corr.snippet))
       }
-
       pageTextsRef.current.set(pageNum, { itemRanges, fullText, snippetPositions })
       setTextLoadCount((n) => n + 1)
     },
@@ -391,9 +401,10 @@ export function PdfAnnotatedViewer({
     [corrsByPage, selectedId, textLoadCount]
   )
 
+  // ── Navigation ────────────────────────────────────────────────────────────
   const scrollToCorrection = useCallback(
     (id: string) => {
-      const mark = containerRef.current?.querySelector(`[data-corr-id="${id}"]`)
+      const mark = scrollRef.current?.querySelector(`[data-corr-id="${id}"]`)
       if (mark) {
         mark.scrollIntoView({ behavior: 'smooth', block: 'center' })
         return
@@ -406,10 +417,7 @@ export function PdfAnnotatedViewer({
   )
 
   const goTo = useCallback(
-    (id: string) => {
-      onSelect(id)
-      scrollToCorrection(id)
-    },
+    (id: string) => { onSelect(id); scrollToCorrection(id) },
     [onSelect, scrollToCorrection]
   )
 
@@ -420,16 +428,9 @@ export function PdfAnnotatedViewer({
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
-      if (e.key === 'ArrowLeft' && prevId) {
-        e.preventDefault()
-        goTo(prevId)
-      } else if (e.key === 'ArrowRight' && nextId) {
-        e.preventDefault()
-        goTo(nextId)
-      } else if (e.key === ' ' && selectedId) {
-        e.preventDefault()
-        onToggleDone(selectedId)
-      }
+      if (e.key === 'ArrowLeft' && prevId) { e.preventDefault(); goTo(prevId) }
+      else if (e.key === 'ArrowRight' && nextId) { e.preventDefault(); goTo(nextId) }
+      else if (e.key === ' ' && selectedId) { e.preventDefault(); onToggleDone(selectedId) }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
@@ -437,8 +438,7 @@ export function PdfAnnotatedViewer({
 
   const handleContainerClick = useCallback(
     (e: React.MouseEvent) => {
-      const target = e.target as HTMLElement
-      const mark = target.closest('[data-corr-id]')
+      const mark = (e.target as HTMLElement).closest('[data-corr-id]')
       if (mark) {
         const id = mark.getAttribute('data-corr-id')
         if (id) goTo(id)
@@ -447,19 +447,15 @@ export function PdfAnnotatedViewer({
     [goTo]
   )
 
-  // Calcul de la largeur de page : réserver 320px pour le panneau + gaps
-  useEffect(() => {
-    if (!containerRef.current) return
-    const obs = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect.width
-      if (w) setPageWidth(Math.min(w - 368, 760))
-    })
-    obs.observe(containerRef.current)
-    return () => obs.disconnect()
-  }, [])
+  // Pages numérotées triées ayant des corrections
+  const pageNumsWithCorrs = useMemo(
+    () => Array.from(corrsByPage.keys()).sort((a, b) => a - b),
+    [corrsByPage]
+  )
 
   return (
     <div className="flex flex-col h-full bg-gray-50">
+
       {/* ── Barre de navigation ─────────────────────────────────────────────── */}
       <div className="flex-shrink-0 bg-white border-b border-gray-200 px-4 py-2 flex items-center gap-3 flex-wrap shadow-sm">
         <button
@@ -473,15 +469,11 @@ export function PdfAnnotatedViewer({
 
         <div className="flex items-center gap-2 text-xs text-gray-500">
           {selectedIdx >= 0 ? (
-            <span className="font-medium text-gray-700">
-              {selectedIdx + 1} / {corrections.length}
-            </span>
+            <span className="font-medium text-gray-700">{selectedIdx + 1} / {corrections.length}</span>
           ) : (
             <span>{corrections.length} corrections</span>
           )}
-          {totalDone > 0 && (
-            <span className="text-green-600 font-medium">· {totalDone} faites</span>
-          )}
+          {totalDone > 0 && <span className="text-green-600 font-medium">· {totalDone} faites</span>}
         </div>
 
         <button
@@ -517,9 +509,7 @@ export function PdfAnnotatedViewer({
         )}
 
         <div className="ml-auto hidden md:flex items-center gap-2 text-xs text-gray-400">
-          <span>← → navigation</span>
-          <span>·</span>
-          <span>Espace : marquer faite</span>
+          <span>← → navigation · Espace : marquer faite</span>
         </div>
       </div>
 
@@ -534,29 +524,17 @@ export function PdfAnnotatedViewer({
               <CheckIcon className="w-3 h-3" />
               {totalDone} faite{totalDone > 1 ? 's' : ''}
               {remaining > 0 && (
-                <span className="text-gray-400 font-normal">
-                  {' '}· {remaining} restante{remaining > 1 ? 's' : ''}
-                </span>
+                <span className="text-gray-400 font-normal"> · {remaining} restante{remaining > 1 ? 's' : ''}</span>
               )}
             </span>
           )}
         </div>
         <div className="flex flex-wrap gap-1">
-          <FilterBtn
-            label={`Tout (${corrections.length})`}
-            active={filter === 'all'}
-            onClick={() => setFilter('all')}
-          />
+          <FilterBtn label={`Tout (${corrections.length})`} active={filter === 'all'} onClick={() => setFilter('all')} />
           {(Object.entries(PANEL_CATEGORY_CONFIG) as [Category, typeof PANEL_CATEGORY_CONFIG[Category]][]).map(
-            ([cat, cfg]) =>
-              counts[cat] > 0 ? (
-                <FilterBtn
-                  key={cat}
-                  label={`${cfg.label} (${counts[cat]})`}
-                  active={filter === cat}
-                  onClick={() => setFilter(cat)}
-                />
-              ) : null
+            ([cat, cfg]) => counts[cat] > 0 ? (
+              <FilterBtn key={cat} label={`${cfg.label} (${counts[cat]})`} active={filter === cat} onClick={() => setFilter(cat)} />
+            ) : null
           )}
           {totalDone > 0 && (
             <FilterBtn
@@ -568,90 +546,98 @@ export function PdfAnnotatedViewer({
         </div>
       </div>
 
-      {/* ── Document PDF + Corrections alignées ─────────────────────────────── */}
-      <div
-        ref={containerRef}
-        className="flex-1 overflow-y-auto px-4 py-4"
-        onClick={handleContainerClick}
-      >
-        <Document
-          file={pdfUrl}
-          onLoadSuccess={({ numPages: n }) => setNumPages(n)}
-          loading={
-            <div className="flex items-center justify-center py-16 text-gray-400 text-sm">
-              Chargement du PDF…
-            </div>
-          }
-          error={
-            <div className="flex items-center justify-center py-16 text-red-500 text-sm">
-              Impossible de charger le PDF.
-            </div>
-          }
-          className="flex flex-col items-start gap-8"
-        >
-          {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => {
-            const pageCorrs = corrsByPage.get(pageNum) ?? []
-            const pageActive = activeCorrsByPage.get(pageNum) ?? 0
-            const pageDone = pageCorrs.length - pageActive
+      {/* ── Zone de scroll unique (PDF + panneau corrections) ────────────────── */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto" onClick={handleContainerClick}>
+        <div className="flex">
 
-            // Corrections filtrées pour ce panneau
-            const panelCorrs = pageCorrs
-              .filter((c) => filter === 'all' || c.category === filter)
-              .filter((c) => !hideDone || !doneIds.has(c.id))
-
-            return (
-              <div
-                key={pageNum}
-                ref={(el) => {
-                  if (el) pageRefs.current.set(pageNum, el)
-                  else pageRefs.current.delete(pageNum)
-                }}
-                className="flex items-start gap-6"
-              >
-                {/* ── Page PDF ── */}
-                <div className="flex-shrink-0">
-                  <div className="shadow-lg rounded overflow-hidden bg-white">
-                    <Page
-                      pageNumber={pageNum}
-                      width={pageWidth}
-                      renderTextLayer={true}
-                      renderAnnotationLayer={false}
-                      customTextRenderer={getTextRenderer(pageNum)}
-                      onGetTextSuccess={(textContent) =>
-                        handleGetTextSuccess(pageNum, textContent)
-                      }
-                    />
-                  </div>
-                  {/* Étiquette de page */}
-                  <div className="mt-1.5 flex items-center gap-2 text-xs text-gray-400 px-1">
-                    <span>page {pageNum}</span>
-                    {pageCorrs.length > 0 && <span className="text-gray-300">·</span>}
-                    {(['orthographe', 'grammaire', 'typographie', 'style', 'coherence', 'renvoi'] as const).map((cat) => {
-                      const n = pageCorrs.filter(
-                        (c) => c.category === cat && !doneIds.has(c.id)
-                      ).length
-                      return n > 0 ? (
-                        <span
-                          key={cat}
-                          className="flex items-center gap-0.5"
-                          title={`${n} ${CATEGORY_LABEL[cat]}`}
-                        >
-                          <span
-                            className="w-1.5 h-1.5 rounded-full inline-block"
-                            style={{ backgroundColor: CATEGORY_DOT[cat] }}
-                          />
-                          <span>{n}</span>
-                        </span>
-                      ) : null
-                    })}
-                    {pageDone > 0 && (
-                      <span className="text-green-500">· {pageDone} faites</span>
-                    )}
-                  </div>
+          {/* ── Colonne PDF ── */}
+          <div ref={pdfColRef} className="flex-shrink-0 relative py-4 px-4">
+            <Document
+              file={pdfUrl}
+              onLoadSuccess={({ numPages: n }) => setNumPages(n)}
+              loading={
+                <div className="flex items-center justify-center py-16 text-gray-400 text-sm">
+                  Chargement du PDF…
                 </div>
+              }
+              error={
+                <div className="flex items-center justify-center py-16 text-red-500 text-sm">
+                  Impossible de charger le PDF.
+                </div>
+              }
+              className="flex flex-col gap-8"
+            >
+              {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => {
+                const pageCorrs = corrsByPage.get(pageNum) ?? []
+                const pageActive = activeCorrsByPage.get(pageNum) ?? 0
+                const pageDone = pageCorrs.length - pageActive
 
-                {/* ── Panneau corrections aligné ── */}
-                <div className="w-80 flex-shrink-0 flex flex-col gap-2 pt-1">
+                return (
+                  <div
+                    key={pageNum}
+                    ref={(el) => {
+                      if (el) pageRefs.current.set(pageNum, el)
+                      else pageRefs.current.delete(pageNum)
+                    }}
+                  >
+                    <div className="shadow-lg rounded overflow-hidden bg-white">
+                      <Page
+                        pageNumber={pageNum}
+                        width={pageWidth}
+                        renderTextLayer={true}
+                        renderAnnotationLayer={false}
+                        customTextRenderer={getTextRenderer(pageNum)}
+                        onGetTextSuccess={(tc) => handleGetTextSuccess(pageNum, tc)}
+                      />
+                    </div>
+                    {/* Étiquette de page */}
+                    <div className="mt-1.5 flex items-center gap-2 text-xs text-gray-400 px-1">
+                      <span>page {pageNum}</span>
+                      {pageCorrs.length > 0 && <span className="text-gray-300">·</span>}
+                      {(['orthographe', 'grammaire', 'typographie', 'style', 'coherence', 'renvoi'] as const).map((cat) => {
+                        const n = pageCorrs.filter((c) => c.category === cat && !doneIds.has(c.id)).length
+                        return n > 0 ? (
+                          <span key={cat} className="flex items-center gap-0.5" title={`${n} ${CATEGORY_LABEL_SHORT[cat]}`}>
+                            <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ backgroundColor: CATEGORY_DOT[cat] }} />
+                            <span>{n}</span>
+                          </span>
+                        ) : null
+                      })}
+                      {pageDone > 0 && <span className="text-green-500">· {pageDone} faites</span>}
+                    </div>
+                  </div>
+                )
+              })}
+            </Document>
+
+            {numPages === 0 && (
+              <div className="flex flex-col items-center justify-center py-16 text-gray-400">
+                <div className="text-3xl mb-3">📄</div>
+                <p className="text-sm">Chargement en cours…</p>
+              </div>
+            )}
+          </div>
+
+          {/* ── Panneau corrections (même scroll, corrections alignées) ── */}
+          <div
+            className="w-80 flex-shrink-0 border-l border-gray-200 bg-white"
+            style={{ position: 'relative', height: docHeight > 0 ? docHeight : '100%' }}
+          >
+            {docHeight > 0 && pageNumsWithCorrs.map((pageNum) => {
+              const pageCorrs = corrsByPage.get(pageNum) ?? []
+              const panelCorrs = pageCorrs
+                .filter((c) => filter === 'all' || c.category === filter)
+                .filter((c) => !hideDone || !doneIds.has(c.id))
+
+              if (panelCorrs.length === 0) return null
+
+              const top = pageTopOffsets.get(pageNum) ?? 0
+
+              return (
+                <div
+                  key={pageNum}
+                  style={{ position: 'absolute', top, width: '100%' }}
+                >
                   {panelCorrs.map((correction) => (
                     <CorrectionCard
                       key={correction.id}
@@ -662,24 +648,20 @@ export function PdfAnnotatedViewer({
                       onToggleDone={onToggleDone}
                     />
                   ))}
-                  {panelCorrs.length === 0 && pageCorrs.length > 0 && hideDone && (
-                    <p className="text-xs text-gray-400 italic pt-1">Toutes faites ✓</p>
-                  )}
                 </div>
-              </div>
-            )
-          })}
-        </Document>
+              )
+            })}
 
-        {numPages === 0 && (
-          <div className="flex flex-col items-center justify-center py-16 text-gray-400">
-            <div className="text-3xl mb-3">📄</div>
-            <p className="text-sm">Chargement en cours…</p>
+            {/* Placeholder pendant le chargement */}
+            {docHeight === 0 && numPages > 0 && (
+              <div className="p-4 text-xs text-gray-400 italic">Chargement des corrections…</div>
+            )}
           </div>
-        )}
+
+        </div>
       </div>
 
-      {/* ── Barre de progression globale ────────────────────────────────────── */}
+      {/* ── Barre de progression ─────────────────────────────────────────────── */}
       {corrections.length > 0 && (
         <div className="flex-shrink-0 bg-white border-t border-gray-200 px-4 py-2 flex items-center gap-3 text-xs text-gray-500">
           <span>Progression :</span>
@@ -690,8 +672,7 @@ export function PdfAnnotatedViewer({
             />
           </div>
           <span className="text-gray-400">
-            {totalDone} / {corrections.length} (
-            {Math.round((totalDone / corrections.length) * 100)}%)
+            {totalDone} / {corrections.length} ({Math.round((totalDone / corrections.length) * 100)}%)
           </span>
         </div>
       )}
