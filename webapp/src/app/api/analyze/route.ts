@@ -204,8 +204,8 @@ async function analyzeChunk(
 ): Promise<Omit<Correction, 'id'>[]> {
   try {
     const response = await client.messages.create({
-      model: 'claude-opus-4-6',
-      max_tokens: 16000,
+      model: 'claude-sonnet-4-6',
+      max_tokens: 8000,
       temperature: 0, // résultats déterministes — même doc = mêmes corrections
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: buildUserPrompt(text, chunkLabel) }],
