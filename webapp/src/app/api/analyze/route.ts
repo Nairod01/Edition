@@ -62,45 +62,60 @@ export async function POST(request: NextRequest) {
 
         const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-        // Parser le formulaire
-        const formData = await request.formData()
-        const file = formData.get('file') as File | null
-
-        if (!file) {
-          send({ type: 'error', message: 'Aucun fichier reçu.' })
-          return
-        }
-
-        const name = file.name.toLowerCase()
-        if (!name.endsWith('.pdf') && !name.endsWith('.docx') && !name.endsWith('.doc')) {
-          send({
-            type: 'error',
-            message: 'Format non supporté. Utilisez un fichier Word (.docx) ou PDF (.pdf).',
-          })
-          return
-        }
-
-        if (file.size > 15 * 1024 * 1024) {
-          send({ type: 'error', message: 'Fichier trop volumineux (maximum 15 Mo).' })
-          return
-        }
-
-        send({ type: 'progress', message: 'Extraction du texte…', percent: 10 })
+        // Parser le formulaire ou le JSON (texte pré-extrait côté client)
+        const contentType = request.headers.get('content-type') ?? ''
 
         let extractedText: string
         let formattedHtml: string | undefined
         let pageOffsets: number[] = []
-        try {
-          const extracted = await extractText(file)
-          extractedText = extracted.text
-          formattedHtml = extracted.formattedHtml
-          pageOffsets = extracted.pageOffsets
-        } catch (err) {
-          send({
-            type: 'error',
-            message: `Erreur d'extraction : ${err instanceof Error ? err.message : String(err)}`,
-          })
-          return
+
+        if (contentType.includes('application/json')) {
+          // PDF pré-extrait côté client — seul le texte est envoyé
+          const body = await request.json()
+          if (!body.text || typeof body.text !== 'string') {
+            send({ type: 'error', message: 'Payload JSON invalide : champ "text" manquant.' })
+            return
+          }
+          extractedText = body.text
+          pageOffsets = Array.isArray(body.pageOffsets) ? body.pageOffsets : []
+        } else {
+          // Fichier DOCX envoyé en multipart
+          const formData = await request.formData()
+          const file = formData.get('file') as File | null
+
+          if (!file) {
+            send({ type: 'error', message: 'Aucun fichier reçu.' })
+            return
+          }
+
+          const name = file.name.toLowerCase()
+          if (!name.endsWith('.docx') && !name.endsWith('.doc')) {
+            send({
+              type: 'error',
+              message: 'Format non supporté. Utilisez un fichier Word (.docx) ou PDF (.pdf).',
+            })
+            return
+          }
+
+          if (file.size > 15 * 1024 * 1024) {
+            send({ type: 'error', message: 'Fichier trop volumineux (maximum 15 Mo).' })
+            return
+          }
+
+          send({ type: 'progress', message: 'Extraction du texte…', percent: 10 })
+
+          try {
+            const extracted = await extractText(file)
+            extractedText = extracted.text
+            formattedHtml = extracted.formattedHtml
+            pageOffsets = extracted.pageOffsets
+          } catch (err) {
+            send({
+              type: 'error',
+              message: `Erreur d'extraction : ${err instanceof Error ? err.message : String(err)}`,
+            })
+            return
+          }
         }
 
         if (!extractedText.trim()) {
