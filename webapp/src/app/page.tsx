@@ -16,6 +16,7 @@ import {
 } from '@/lib/docCache'
 import type { LastDocMeta } from '@/lib/docCache'
 import { saveFile, loadFile } from '@/lib/fileCache'
+import { extractPdfClientSide } from '@/lib/clientExtractor'
 
 // Chargement dynamique (côté client uniquement) car react-pdf utilise le DOM/Worker
 const PdfAnnotatedViewer = dynamic(
@@ -138,14 +139,40 @@ export default function Home() {
       setViewMode('annotated')
 
       try {
-        const formData = new FormData()
-        formData.append('file', file)
-        const response = await fetch('/api/analyze', { method: 'POST', body: formData })
+        let fetchInit: RequestInit
+
+        if (file.name.toLowerCase().endsWith('.pdf')) {
+          // Extraction côté client — évite la limite 4.5MB de Vercel Hobby
+          setStatus('Extraction du texte PDF…')
+          setProgress(8)
+          const extracted = await extractPdfClientSide(file, (page, total) => {
+            setStatus(`Extraction page ${page}/${total}…`)
+            setProgress(8 + Math.round((page / total) * 12))
+          })
+          fetchInit = {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: extracted.text, pageOffsets: extracted.pageOffsets }),
+          }
+        } else {
+          const formData = new FormData()
+          formData.append('file', file)
+          fetchInit = { method: 'POST', body: formData }
+        }
+
+        const response = await fetch('/api/analyze', fetchInit)
+
+        if (!response.ok) {
+          const errText = await response.text().catch(() => '')
+          throw new Error(`Erreur serveur ${response.status}${errText ? ' : ' + errText.slice(0, 200) : ''}`)
+        }
+
         if (!response.body) throw new Error('Aucune réponse du serveur.')
 
         const reader = response.body.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
+        let gotResult = false
 
         while (true) {
           const { done, value } = await reader.read()
@@ -162,6 +189,7 @@ export default function Home() {
                 setStatus(event.message)
                 setProgress(event.percent)
               } else if (event.type === 'result') {
+                gotResult = true
                 const r = event.data
 
                 saveCachedDoc(file, r, [], null)
@@ -180,6 +208,7 @@ export default function Home() {
                 setProgress(100)
                 setPhase('results')
               } else if (event.type === 'error') {
+                gotResult = true
                 setErrorMsg(event.message)
                 setPhase('error')
               }
@@ -187,6 +216,10 @@ export default function Home() {
               // Ligne partielle
             }
           }
+        }
+
+        if (!gotResult) {
+          throw new Error('Le serveur n\'a renvoyé aucun résultat. Le document est peut-être trop volumineux ou l\'analyse a expiré.')
         }
       } catch (err) {
         setErrorMsg(err instanceof Error ? err.message : 'Erreur réseau inattendue.')
