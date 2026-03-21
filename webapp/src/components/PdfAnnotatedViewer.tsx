@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import type { TextContent, TextItem } from 'react-pdf'
 import 'react-pdf/dist/Page/TextLayer.css'
@@ -12,21 +12,12 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.vers
 // ── Couleurs annotations PDF ────────────────────────────────────────────────
 
 const CATEGORY_BG: Record<string, string> = {
-  orthographe: 'rgba(239,68,68,0.25)',
-  grammaire: 'rgba(249,115,22,0.25)',
-  typographie: 'rgba(59,130,246,0.25)',
-  style: 'rgba(34,197,94,0.25)',
-  coherence: 'rgba(168,85,247,0.25)',
-  renvoi: 'rgba(234,179,8,0.25)',
-}
-
-const CATEGORY_SELECTED_BG: Record<string, string> = {
-  orthographe: 'rgba(239,68,68,0.55)',
-  grammaire: 'rgba(249,115,22,0.55)',
-  typographie: 'rgba(59,130,246,0.55)',
-  style: 'rgba(34,197,94,0.55)',
-  coherence: 'rgba(168,85,247,0.55)',
-  renvoi: 'rgba(234,179,8,0.55)',
+  orthographe: 'rgba(239,68,68,0.35)',
+  grammaire: 'rgba(249,115,22,0.35)',
+  typographie: 'rgba(59,130,246,0.35)',
+  style: 'rgba(34,197,94,0.35)',
+  coherence: 'rgba(168,85,247,0.35)',
+  renvoi: 'rgba(234,179,8,0.35)',
 }
 
 const CATEGORY_DOT: Record<string, string> = {
@@ -76,18 +67,30 @@ function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;')
 }
 
+/**
+ * Trouve la position d'un snippet dans str.
+ * Utilise \s* dans la regex pour matcher même si les items PDF sont concaténés sans espaces.
+ */
 function findSnippet(str: string, snippet: string): [number, number] | null {
   if (!snippet.trim()) return null
   const lowerStr = str.toLowerCase()
   const lowerSnip = snippet.toLowerCase()
+
+  // 1. Match direct
   const directIdx = lowerStr.indexOf(lowerSnip)
   if (directIdx !== -1) return [directIdx, directIdx + snippet.length]
+
+  // 2. Regex flexible : \s* permet de matcher même quand les espaces sont absents
+  //    entre items PDF concaténés (ex : "MadameBovary" pour "Madame Bovary")
   try {
-    const escaped = snippet.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
+    const escaped = snippet.trim()
+      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/\s+/g, '\\s*')
     const regex = new RegExp(escaped, 'i')
     const m = str.match(regex)
     if (m && m.index !== undefined) return [m.index, m.index + m[0].length]
   } catch { /* ignore */ }
+
   return null
 }
 
@@ -99,10 +102,14 @@ interface PageTextData {
   snippetPositions: Map<string, [number, number] | null>
 }
 
+/**
+ * Construit le renderer de texte pour une page.
+ * NB : ne prend PAS selectedId — la sélection est gérée via DOM (classe CSS),
+ * ce qui évite de re-rendre TOUS les calques texte à chaque clic.
+ */
 function buildTextRenderer(
   pageTextData: PageTextData | undefined,
   pageCorrections: Correction[],
-  selectedId: string | null,
 ) {
   return ({ str, itemIndex }: { str: string; itemIndex: number }) => {
     if (!str.trim() || pageCorrections.length === 0) return str
@@ -125,6 +132,7 @@ function buildTextRenderer(
         }
       }
     } else {
+      // Fallback avant que le texte soit chargé
       for (const corr of pageCorrections) {
         const pos = findSnippet(str, corr.snippet)
         if (pos) matches.push({ start: pos[0], end: pos[1], correction: corr })
@@ -139,16 +147,12 @@ function buildTextRenderer(
     for (const { start, end, correction } of matches) {
       if (start < cursor) continue
       html += escapeHtml(str.slice(cursor, start))
-      const isSelected = correction.id === selectedId
-      const bg = isSelected
-        ? (CATEGORY_SELECTED_BG[correction.category] ?? CATEGORY_SELECTED_BG.style)
-        : (CATEGORY_BG[correction.category] ?? CATEGORY_BG.style)
-      const outline = isSelected ? 'outline:2px solid #1e3a5f;outline-offset:1px;' : ''
+      const bg = CATEGORY_BG[correction.category] ?? CATEGORY_BG.style
       const borderBottom = `border-bottom:2px solid ${CATEGORY_DOT[correction.category] ?? '#888'};`
       const strikeColor = CATEGORY_DOT[correction.category] ?? '#888'
       const strikeStyle = `text-decoration:line-through;text-decoration-color:${strikeColor};text-decoration-thickness:2px;`
       const tooltip = escapeHtml(`${correction.rule} → ${correction.corrected}`)
-      html += `<mark style="background:${bg};${borderBottom}${strikeStyle}${outline}border-radius:2px;padding:0 1px;cursor:pointer;" data-corr-id="${correction.id}" title="${tooltip}">${escapeHtml(str.slice(start, end))}</mark>`
+      html += `<mark style="background:${bg};${borderBottom}${strikeStyle}border-radius:2px;padding:0 1px;cursor:pointer;" data-corr-id="${correction.id}" title="${tooltip}">${escapeHtml(str.slice(start, end))}</mark>`
       cursor = end
     }
     html += escapeHtml(str.slice(cursor))
@@ -156,9 +160,9 @@ function buildTextRenderer(
   }
 }
 
-// ── Carte correction ────────────────────────────────────────────────────────
+// ── Carte correction (mémoïsée) ─────────────────────────────────────────────
 
-function CorrectionCard({
+const CorrectionCard = React.memo(function CorrectionCard({
   correction,
   isSelected,
   isDone,
@@ -215,7 +219,7 @@ function CorrectionCard({
       <div className="text-xs text-gray-500 leading-relaxed">{correction.explanation}</div>
     </div>
   )
-}
+})
 
 function CheckIcon({ className }: { className?: string }) {
   return (
@@ -262,23 +266,15 @@ export function PdfAnnotatedViewer({
   const [filter, setFilter] = useState<Category | 'all'>('all')
   const [hideDone, setHideDone] = useState(false)
 
-  // Refs pour layout
-  const scrollRef = useRef<HTMLDivElement>(null)       // conteneur scroll unique
-  const pdfColRef = useRef<HTMLDivElement>(null)        // colonne PDF (position:relative)
+  const scrollRef = useRef<HTMLDivElement>(null)
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map())
 
   // Texte PDF pré-calculé par page
   const pageTextsRef = useRef<Map<number, PageTextData>>(new Map())
   const [textLoadCount, setTextLoadCount] = useState(0)
 
-  // Offsets Y de chaque page dans la colonne PDF + hauteur totale du doc
-  const [pageTopOffsets, setPageTopOffsets] = useState<Map<number, number>>(new Map())
-  const [docHeight, setDocHeight] = useState(0)
-
-  const activeCorrections = useMemo(
-    () => corrections.filter((c) => !doneIds.has(c.id)),
-    [corrections, doneIds]
-  )
+  // Référence pour la gestion DOM de la sélection (sans re-rendu des calques texte)
+  const prevSelectedIdRef = useRef<string | null>(null)
 
   const corrsByPage = useMemo(() => {
     const map = new Map<number, Correction[]>()
@@ -289,15 +285,6 @@ export function PdfAnnotatedViewer({
     }
     return map
   }, [corrections])
-
-  const activeCorrsByPage = useMemo(() => {
-    const map = new Map<number, number>()
-    for (const c of activeCorrections) {
-      const p = c.pageNum ?? 1
-      map.set(p, (map.get(p) ?? 0) + 1)
-    }
-    return map
-  }, [activeCorrections])
 
   const counts = useMemo(() => ({
     orthographe: corrections.filter((c) => c.category === 'orthographe').length,
@@ -312,78 +299,72 @@ export function PdfAnnotatedViewer({
   const selectedIdx = selectedId ? orderedIds.indexOf(selectedId) : -1
   const prevId = selectedIdx > 0 ? orderedIds[selectedIdx - 1] : null
   const nextId = selectedIdx < orderedIds.length - 1 ? orderedIds[selectedIdx + 1] : null
-  const firstActiveId = activeCorrections[0]?.id ?? null
+  const firstActiveId = corrections.find((c) => !doneIds.has(c.id))?.id ?? null
   const totalDone = doneIds.size
   const remaining = corrections.length - totalDone
 
-  // ── Mesure des positions Y des pages ─────────────────────────────────────
-  const measurePageOffsets = useCallback(() => {
-    const container = pdfColRef.current
-    if (!container || pageRefs.current.size === 0) return
+  // ── Sélection via DOM (sans re-rendu des calques texte PDF) ───────────────
+  useEffect(() => {
+    const container = scrollRef.current
+    if (!container) return
+    // Retirer la classe de l'ancienne sélection
+    if (prevSelectedIdRef.current) {
+      container.querySelectorAll(`[data-corr-id="${prevSelectedIdRef.current}"]`)
+        .forEach((el) => el.classList.remove('corr-selected'))
+    }
+    // Ajouter la classe à la nouvelle sélection
+    if (selectedId) {
+      container.querySelectorAll(`[data-corr-id="${selectedId}"]`)
+        .forEach((el) => el.classList.add('corr-selected'))
+    }
+    prevSelectedIdRef.current = selectedId
+  }, [selectedId])
 
-    // getBoundingClientRect — plus fiable que la chaîne offsetParent
-    // La différence de positions viewport est indépendante du scroll
-    // (les deux éléments scrollent ensemble dans scrollRef)
-    const containerRect = container.getBoundingClientRect()
-
-    const newOffsets = new Map<number, number>()
-    Array.from(pageRefs.current.entries()).forEach(([pageNum, el]) => {
-      const elRect = el.getBoundingClientRect()
-      const top = elRect.top - containerRect.top
-      newOffsets.set(pageNum, top)
-    })
-    setPageTopOffsets(new Map(newOffsets))
-    setDocHeight(container.scrollHeight)
-  }, [])
-
+  // Reset lors d'un changement de PDF
   useEffect(() => {
     pageTextsRef.current.clear()
     setTextLoadCount(0)
-    setPageTopOffsets(new Map())
-    setDocHeight(0)
   }, [pdfUrl])
 
-  // Mesurer après chaque chargement de page ou redimensionnement
-  // Délai plus long pour les gros documents (toutes les pages doivent être rendues)
-  useEffect(() => {
-    if (numPages === 0) return
-    const delay = numPages > 20 ? 400 : 150
-    const timer = setTimeout(measurePageOffsets, delay)
-    return () => clearTimeout(timer)
-  }, [numPages, pageWidth, textLoadCount, measurePageOffsets])
-
-  // Observer les changements de taille de la colonne PDF
-  useEffect(() => {
-    if (!pdfColRef.current) return
-    const obs = new ResizeObserver(measurePageOffsets)
-    obs.observe(pdfColRef.current)
-    return () => obs.disconnect()
-  }, [measurePageOffsets])
-
   // ── Calcul largeur de page ────────────────────────────────────────────────
-  // Réserver 320px pour le panneau corrections + padding
   useEffect(() => {
     if (!scrollRef.current) return
     const obs = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect.width
-      if (w) setPageWidth(Math.min(w - 320 - 48, 760))
+      // 320px panneau corrections + 32px padding
+      if (w) setPageWidth(Math.min(w - 320 - 32, 760))
     })
     obs.observe(scrollRef.current)
     return () => obs.disconnect()
   }, [])
 
-  // ── Texte PDF ─────────────────────────────────────────────────────────────
+  // ── Chargement du texte PDF ───────────────────────────────────────────────
   const handleGetTextSuccess = useCallback(
     (pageNum: number, textContent: TextContent) => {
       const items = textContent.items.filter((item): item is TextItem => 'str' in item)
       const itemRanges: ItemRange[] = []
       let offset = 0
       let fullText = ''
-      for (const item of items) {
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
         itemRanges.push({ start: offset, end: offset + item.str.length })
         fullText += item.str
         offset += item.str.length
+
+        // Ajouter un séparateur entre items pour que les snippets multi-items soient trouvables
+        if (i < items.length - 1) {
+          const hasEOL = (item as TextItem & { hasEOL?: boolean }).hasEOL
+          if (hasEOL) {
+            fullText += '\n'
+            offset += 1
+          } else if (item.str && !item.str.endsWith(' ') && !item.str.endsWith('\n')) {
+            fullText += ' '
+            offset += 1
+          }
+        }
       }
+
       const snippetPositions = new Map<string, [number, number] | null>()
       for (const corr of corrsByPage.get(pageNum) ?? []) {
         snippetPositions.set(corr.id, findSnippet(fullText, corr.snippet))
@@ -394,28 +375,31 @@ export function PdfAnnotatedViewer({
     [corrsByPage]
   )
 
+  // ── Renderer de texte (sans selectedId → pas de re-rendu sur chaque clic) ─
   const getTextRenderer = useCallback(
     (pageNum: number) =>
       buildTextRenderer(
         pageTextsRef.current.get(pageNum),
         corrsByPage.get(pageNum) ?? [],
-        selectedId,
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [corrsByPage, selectedId, textLoadCount]
+    [corrsByPage, textLoadCount]  // PAS selectedId ici
   )
 
   // ── Navigation ────────────────────────────────────────────────────────────
   const scrollToCorrection = useCallback(
     (id: string) => {
+      // Essayer de trouver le mark dans le calque texte PDF
       const mark = scrollRef.current?.querySelector(`[data-corr-id="${id}"]`)
       if (mark) {
         mark.scrollIntoView({ behavior: 'smooth', block: 'center' })
         return
       }
+      // Fallback : scroller jusqu'à la page correspondante
       const corr = corrections.find((c) => c.id === id)
-      if (!corr) return
-      pageRefs.current.get(corr.pageNum ?? 1)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      if (corr) {
+        pageRefs.current.get(corr.pageNum ?? 1)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
     },
     [corrections]
   )
@@ -449,12 +433,6 @@ export function PdfAnnotatedViewer({
       }
     },
     [goTo]
-  )
-
-  // Pages numérotées triées ayant des corrections
-  const pageNumsWithCorrs = useMemo(
-    () => Array.from(corrsByPage.keys()).sort((a, b) => a - b),
-    [corrsByPage]
   )
 
   return (
@@ -550,98 +528,73 @@ export function PdfAnnotatedViewer({
         </div>
       </div>
 
-      {/* ── Zone de scroll unique (PDF + panneau corrections) ────────────────── */}
+      {/* ── Zone de scroll : chaque ligne = page PDF + ses corrections côte à côte ── */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto" onClick={handleContainerClick}>
-        <div className="flex">
+        <Document
+          file={pdfUrl}
+          onLoadSuccess={({ numPages: n }) => setNumPages(n)}
+          loading={
+            <div className="flex items-center justify-center py-16 text-gray-400 text-sm">
+              Chargement du PDF…
+            </div>
+          }
+          error={
+            <div className="flex items-center justify-center py-16 text-red-500 text-sm">
+              Impossible de charger le PDF.
+            </div>
+          }
+          className="block"
+        >
+          {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => {
+            const pageCorrs = corrsByPage.get(pageNum) ?? []
+            const panelCorrs = pageCorrs
+              .filter((c) => filter === 'all' || c.category === filter)
+              .filter((c) => !hideDone || !doneIds.has(c.id))
+            const pageActive = pageCorrs.filter((c) => !doneIds.has(c.id)).length
+            const pageDone = pageCorrs.length - pageActive
 
-          {/* ── Colonne PDF ── */}
-          <div ref={pdfColRef} className="flex-shrink-0 relative py-4 px-4">
-            <Document
-              file={pdfUrl}
-              onLoadSuccess={({ numPages: n }) => setNumPages(n)}
-              loading={
-                <div className="flex items-center justify-center py-16 text-gray-400 text-sm">
-                  Chargement du PDF…
-                </div>
-              }
-              error={
-                <div className="flex items-center justify-center py-16 text-red-500 text-sm">
-                  Impossible de charger le PDF.
-                </div>
-              }
-              className="flex flex-col gap-8"
-            >
-              {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => {
-                const pageCorrs = corrsByPage.get(pageNum) ?? []
-                const pageActive = activeCorrsByPage.get(pageNum) ?? 0
-                const pageDone = pageCorrs.length - pageActive
-
-                return (
-                  <div
-                    key={pageNum}
-                    ref={(el) => {
-                      if (el) pageRefs.current.set(pageNum, el)
-                      else pageRefs.current.delete(pageNum)
-                    }}
-                  >
-                    <div className="shadow-lg rounded overflow-hidden bg-white">
-                      <Page
-                        pageNumber={pageNum}
-                        width={pageWidth}
-                        renderTextLayer={true}
-                        renderAnnotationLayer={false}
-                        customTextRenderer={getTextRenderer(pageNum)}
-                        onGetTextSuccess={(tc) => handleGetTextSuccess(pageNum, tc)}
-                      />
-                    </div>
-                    {/* Étiquette de page */}
-                    <div className="mt-1.5 flex items-center gap-2 text-xs text-gray-400 px-1">
-                      <span>page {pageNum}</span>
-                      {pageCorrs.length > 0 && <span className="text-gray-300">·</span>}
-                      {(['orthographe', 'grammaire', 'typographie', 'style', 'coherence', 'renvoi'] as const).map((cat) => {
-                        const n = pageCorrs.filter((c) => c.category === cat && !doneIds.has(c.id)).length
-                        return n > 0 ? (
-                          <span key={cat} className="flex items-center gap-0.5" title={`${n} ${CATEGORY_LABEL_SHORT[cat]}`}>
-                            <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ backgroundColor: CATEGORY_DOT[cat] }} />
-                            <span>{n}</span>
-                          </span>
-                        ) : null
-                      })}
-                      {pageDone > 0 && <span className="text-green-500">· {pageDone} faites</span>}
-                    </div>
+            return (
+              <div
+                key={pageNum}
+                ref={(el) => {
+                  if (el) pageRefs.current.set(pageNum, el)
+                  else pageRefs.current.delete(pageNum)
+                }}
+                className="flex items-start border-b border-gray-100"
+                // content-visibility:auto → le navigateur saute le rendu des pages hors écran
+                style={{ contentVisibility: 'auto', containIntrinsicSize: '0 900px' } as React.CSSProperties}
+              >
+                {/* ── Colonne page PDF ── */}
+                <div className="flex-shrink-0 py-4 pl-4 pr-2">
+                  <div className="shadow-lg rounded overflow-hidden bg-white">
+                    <Page
+                      pageNumber={pageNum}
+                      width={pageWidth}
+                      renderTextLayer={true}
+                      renderAnnotationLayer={false}
+                      customTextRenderer={getTextRenderer(pageNum)}
+                      onGetTextSuccess={(tc) => handleGetTextSuccess(pageNum, tc)}
+                    />
                   </div>
-                )
-              })}
-            </Document>
+                  {/* Étiquette de page */}
+                  <div className="mt-1.5 flex items-center gap-2 text-xs text-gray-400 px-1">
+                    <span>page {pageNum}</span>
+                    {pageCorrs.length > 0 && <span className="text-gray-300">·</span>}
+                    {(['orthographe', 'grammaire', 'typographie', 'style', 'coherence', 'renvoi'] as const).map((cat) => {
+                      const n = pageCorrs.filter((c) => c.category === cat && !doneIds.has(c.id)).length
+                      return n > 0 ? (
+                        <span key={cat} className="flex items-center gap-0.5" title={`${n} ${CATEGORY_LABEL_SHORT[cat]}`}>
+                          <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ backgroundColor: CATEGORY_DOT[cat] }} />
+                          <span>{n}</span>
+                        </span>
+                      ) : null
+                    })}
+                    {pageDone > 0 && <span className="text-green-500">· {pageDone} faites</span>}
+                  </div>
+                </div>
 
-            {numPages === 0 && (
-              <div className="flex flex-col items-center justify-center py-16 text-gray-400">
-                <div className="text-3xl mb-3">📄</div>
-                <p className="text-sm">Chargement en cours…</p>
-              </div>
-            )}
-          </div>
-
-          {/* ── Panneau corrections (même scroll, corrections alignées) ── */}
-          <div
-            className="w-80 flex-shrink-0 border-l border-gray-200 bg-white"
-            style={{ position: 'relative', height: docHeight > 0 ? docHeight : '100%' }}
-          >
-            {docHeight > 0 && pageNumsWithCorrs.map((pageNum) => {
-              const pageCorrs = corrsByPage.get(pageNum) ?? []
-              const panelCorrs = pageCorrs
-                .filter((c) => filter === 'all' || c.category === filter)
-                .filter((c) => !hideDone || !doneIds.has(c.id))
-
-              if (panelCorrs.length === 0) return null
-
-              const top = pageTopOffsets.get(pageNum) ?? 0
-
-              return (
-                <div
-                  key={pageNum}
-                  style={{ position: 'absolute', top, width: '100%' }}
-                >
+                {/* ── Colonne corrections de cette page (alignée avec la page) ── */}
+                <div className="w-80 flex-shrink-0 border-l border-gray-200 bg-white self-stretch">
                   {panelCorrs.map((correction) => (
                     <CorrectionCard
                       key={correction.id}
@@ -653,16 +606,17 @@ export function PdfAnnotatedViewer({
                     />
                   ))}
                 </div>
-              )
-            })}
+              </div>
+            )
+          })}
+        </Document>
 
-            {/* Placeholder pendant le chargement */}
-            {docHeight === 0 && numPages > 0 && (
-              <div className="p-4 text-xs text-gray-400 italic">Chargement des corrections…</div>
-            )}
+        {numPages === 0 && (
+          <div className="flex flex-col items-center justify-center py-16 text-gray-400">
+            <div className="text-3xl mb-3">📄</div>
+            <p className="text-sm">Chargement en cours…</p>
           </div>
-
-        </div>
+        )}
       </div>
 
       {/* ── Barre de progression ─────────────────────────────────────────────── */}

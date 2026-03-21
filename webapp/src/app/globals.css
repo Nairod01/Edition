@@ -73,6 +73,13 @@
   color: transparent;
 }
 
+/* Correction sélectionnée : outline visible sans re-rendu du calque texte */
+.react-pdf__Page__textContent mark.corr-selected {
+  outline: 2px solid #1e3a5f;
+  outline-offset: 1px;
+  filter: brightness(1.8) saturate(1.5);
+}
+
 /* Scrollbars personnalisées */
 ::-webkit-scrollbar {
   width: 6px;
