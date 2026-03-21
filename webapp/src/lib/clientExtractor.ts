@@ -33,6 +33,10 @@ export async function extractPdfClientSide(
     for (const item of textContent.items as any[]) {
       if ('str' in item) {
         if (lastY === undefined || lastY === item.transform[5]) {
+          // Même ligne : ajouter un espace si nécessaire
+          if (text.length > 0 && !text.endsWith(' ') && item.str.length > 0 && !item.str.startsWith(' ')) {
+            text += ' '
+          }
           text += item.str
         } else {
           text += '\n' + item.str

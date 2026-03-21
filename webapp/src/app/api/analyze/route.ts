@@ -261,6 +261,7 @@ async function analyzeChunk(
       const textBlock = response.content.find((b) => b.type === 'text')
       if (!textBlock || textBlock.type !== 'text') return []
 
+      console.log(`[${chunkLabel ?? 'chunk'}] text_in (first 200):`, text.slice(0, 200).replace(/\n/g, '↵'))
       console.log(`[${chunkLabel ?? 'chunk'}] stop_reason=${response.stop_reason} tokens_out=${response.usage.output_tokens}`)
       console.log(`[${chunkLabel ?? 'chunk'}] raw response (first 500):`, textBlock.text.slice(0, 500))
 
