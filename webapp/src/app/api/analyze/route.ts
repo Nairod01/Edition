@@ -130,8 +130,8 @@ export async function POST(request: NextRequest) {
         send({ type: 'progress', message: 'Découpage du document…', percent: 20 })
 
         // Découper si le texte est très long
-        const MAX_CHUNK = 20_000 // ~5K tokens — chunks ciblés, moins chers et plus précis
-        const chunks = chunkText(extractedText, MAX_CHUNK, 200)
+        const MAX_CHUNK = 35_000 // ~9K tokens — moins de chunks = tout en 1 batch parallèle
+        const chunks = chunkText(extractedText, MAX_CHUNK, 300)
 
         let allRaw: Omit<Correction, 'id'>[] = []
 
@@ -145,7 +145,7 @@ export async function POST(request: NextRequest) {
         })
 
         // Analyse les parties avec concurrence limitée pour éviter les rate limits API
-        const CONCURRENCY = 3
+        const CONCURRENCY = 5
         let completed = 0
 
         async function runWithConcurrency<T>(
@@ -253,7 +253,7 @@ async function analyzeChunk(
     try {
       const response = await client.messages.create({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 4096,
+        max_tokens: 2048,
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: buildUserPrompt(text, chunkLabel) }],
       })
