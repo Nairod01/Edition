@@ -51,4 +51,4 @@ max_requetes_paralleles: 3     # requêtes API simultanées
 cache: true                    # met en cache les analyses pour éviter les re-traitements
 
 # --- Modèle Claude ---
-modele: "claude-opus-4-6"      # claude-opus-4-6 | claude-sonnet-4-6 (plus rapide, moins précis)
+modele: "claude-haiku-4-5-20251001"  # claude-haiku-4-5-20251001 (économique) | claude-sonnet-4-6 | claude-opus-4-6

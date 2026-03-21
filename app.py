@@ -320,8 +320,9 @@ HOME_HTML = """<!DOCTYPE html>
         <div>
           <label>Modèle</label>
           <select name="modele">
-            <option value="claude-opus-4-6" selected>Opus 4.6 (précis)</option>
-            <option value="claude-sonnet-4-6">Sonnet 4.6 (rapide)</option>
+            <option value="claude-haiku-4-5-20251001" selected>Haiku 4.5 (économique)</option>
+            <option value="claude-sonnet-4-6">Sonnet 4.6 (équilibré)</option>
+            <option value="claude-opus-4-6">Opus 4.6 (précis)</option>
           </select>
         </div>
       </div>
@@ -500,7 +501,7 @@ async def start_analyse(
     genre: str = Form("roman"),
     niveau: str = Form("standard"),
     temps_narratif: str = Form("passe"),
-    modele: str = Form("claude-opus-4-6"),
+    modele: str = Form("claude-haiku-4-5-20251001"),
     api_key: str = Form(""),
     axes: list[str] = Form(default=[]),
 ):

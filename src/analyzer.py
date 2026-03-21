@@ -75,40 +75,14 @@ Tu analyses des manuscrits avec exigence et bienveillance. Tes remarques sont pr
 Tu identifies toujours le texte EXACT concerné pour permettre sa localisation."""
 
 
-_PROMPT_GRAMMAR = """Analyse ce passage de manuscrit et identifie TOUS les problèmes de grammaire et d'orthographe.
-
-PASSAGE (pages {start_page}–{end_page}) :
-{text}
-
-Réponds UNIQUEMENT avec un objet JSON valide, sans texte avant ni après :
-{{
-  "issues": [
-    {{
-      "text_snippet": "texte exact fautif (15 mots max)",
-      "context": "phrase complète contenant le problème",
-      "category": "orthographe",
-      "severity": "error",
-      "message": "Explication précise du problème",
-      "correction": "version corrigée du snippet"
-    }}
-  ]
-}}
-
-Catégories autorisées : "orthographe"
-Sévérités : "error" (faute claire), "warning" (problème probable), "suggestion" (amélioration)
-Si aucun problème, retourne {{"issues": []}}"""
-
-
-_PROMPT_STYLE = """Analyse ce passage en tant qu'éditrice littéraire et identifie les problèmes de style et de lisibilité.
+_PROMPT_GRAMMAR_STYLE = """Analyse ce passage et identifie les problèmes de grammaire, d'orthographe et de style.
 
 Cherche :
-- Répétitions de mots ou de structures dans un même paragraphe
-- Phrases trop longues ou syntaxe lourde (> 50 mots sans ponctuation forte)
-- Tournures passives excessives
-- Abus de nominalisations
-- Adverbes en -ment redondants
-- Clichés ou formules figées
-- Ruptures de registre (mélange soutenu/familier non intentionnel)
+- Fautes d'orthographe, homophones, accords
+- Erreurs grammaticales (conjugaison, pronoms, participes passés)
+- Répétitions de mots dans un même paragraphe
+- Phrases trop longues (> 50 mots), tournures passives excessives, clichés
+- Ruptures de registre non intentionnelles
 
 PASSAGE (pages {start_page}–{end_page}) :
 {text}
@@ -117,15 +91,23 @@ Réponds UNIQUEMENT avec un objet JSON valide :
 {{
   "issues": [
     {{
-      "text_snippet": "texte exact concerné (15 mots max)",
-      "context": "phrase ou paragraphe contenant le problème",
-      "category": "style",
-      "severity": "warning",
-      "message": "Explication éditoriale du problème",
-      "correction": "suggestion de reformulation (si applicable)"
+      "text_snippet": "texte exact fautif (15 mots max)",
+      "context": "phrase complète contenant le problème",
+      "category": "orthographe|style",
+      "severity": "error|warning|suggestion",
+      "message": "Explication précise du problème",
+      "correction": "version corrigée du snippet"
     }}
   ]
-}}"""
+}}
+
+Catégories autorisées : "orthographe", "style"
+Si aucun problème, retourne {{"issues": []}}"""
+
+
+# Alias conservés pour compatibilité
+_PROMPT_GRAMMAR = _PROMPT_GRAMMAR_STYLE
+_PROMPT_STYLE = _PROMPT_GRAMMAR_STYLE
 
 
 _PROMPT_COHERENCE = """Analyse la cohérence et l'homogénéisation de ce texte.
@@ -237,7 +219,7 @@ class EditorialAnalyzer:
     def __init__(self, config: dict, api_key: str | None = None):
         self.config = config
         self.analyses_config = config.get("analyses", {})
-        self.model = config.get("modele", "claude-opus-4-6")
+        self.model = config.get("modele", "claude-haiku-4-5-20251001")
         self.max_parallel = config.get("max_requetes_paralleles", 3)
         self.client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
         self.rules_engine = FrenchTypographyRules(config)
@@ -321,14 +303,10 @@ class EditorialAnalyzer:
 
         semaphore = asyncio.Semaphore(self.max_parallel)
 
-        # Grammaire + Style : par chunk
-        if self.analyses_config.get("orthographe_grammaire", True):
+        # Grammaire + Style : une seule passe combinée par chunk
+        if self.analyses_config.get("orthographe_grammaire", True) or self.analyses_config.get("style_lisibilite", True):
             for chunk in chunks:
-                tasks.append(self._analyze_chunk(semaphore, chunk, "grammar"))
-
-        if self.analyses_config.get("style_lisibilite", True):
-            for chunk in chunks:
-                tasks.append(self._analyze_chunk(semaphore, chunk, "style"))
+                tasks.append(self._analyze_chunk(semaphore, chunk, "grammar_style"))
 
         # Cohérence : sur le texte complet (résumé)
         if self.analyses_config.get("homogeneisation", True):
@@ -354,11 +332,10 @@ class EditorialAnalyzer:
 
     async def _analyze_chunk(self, semaphore: asyncio.Semaphore, chunk: dict, analysis_type: str) -> list[EditorialIssue]:
         async with semaphore:
-            prompt_template = _PROMPT_GRAMMAR if analysis_type == "grammar" else _PROMPT_STYLE
-            prompt = prompt_template.format(
+            prompt = _PROMPT_GRAMMAR_STYLE.format(
                 start_page=chunk["start_page"],
                 end_page=chunk["end_page"],
-                text=chunk["text"][:6000],  # sécurité : limite de taille
+                text=chunk["text"][:5000],  # ~1 250 tokens — focus sur l'essentiel
             )
             try:
                 raw = await asyncio.get_event_loop().run_in_executor(
@@ -433,7 +410,7 @@ class EditorialAnalyzer:
     def _call_claude(self, prompt: str) -> str:
         response = self.client.messages.create(
             model=self.model,
-            max_tokens=4096,
+            max_tokens=2048,
             system=_SYSTEM_EDITOR,
             messages=[{"role": "user", "content": prompt}],
         )

@@ -130,8 +130,8 @@ export async function POST(request: NextRequest) {
         send({ type: 'progress', message: 'Découpage du document…', percent: 20 })
 
         // Découper si le texte est très long
-        const MAX_CHUNK = 80_000 // ~20K tokens — laisse de la place pour la réponse
-        const chunks = chunkText(extractedText, MAX_CHUNK, 500)
+        const MAX_CHUNK = 20_000 // ~5K tokens — chunks ciblés, moins chers et plus précis
+        const chunks = chunkText(extractedText, MAX_CHUNK, 200)
 
         let allRaw: Omit<Correction, 'id'>[] = []
 
@@ -252,8 +252,8 @@ async function analyzeChunk(
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const response = await client.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 8000,
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 2048,
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: buildUserPrompt(text, chunkLabel) }],
       })
