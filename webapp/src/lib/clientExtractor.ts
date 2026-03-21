@@ -14,37 +14,47 @@ export async function extractPdfClientSide(
 ): Promise<ClientExtractionResult> {
   const pdfjsLib = await import('pdfjs-dist')
 
-  // Worker en CDN — pas de bundling nécessaire
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`
+  // Worker local (public/) — évite le téléchargement CDN lent
+  pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
 
   const arrayBuffer = await file.arrayBuffer()
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
 
-  const pageTexts: string[] = []
   const PAGE_SEP = '\n\n'
+  let completed = 0
 
-  for (let i = 1; i <= pdf.numPages; i++) {
-    if (onProgress) onProgress(i, pdf.numPages)
-    const page = await pdf.getPage(i)
-    const textContent = await page.getTextContent()
+  // Extraction parallèle des pages (au lieu de séquentielle)
+  const BATCH = 8
+  const pageTexts: string[] = new Array(pdf.numPages)
 
-    let lastY: number | undefined
-    let text = ''
-    for (const item of textContent.items as any[]) {
-      if ('str' in item) {
-        if (lastY === undefined || lastY === item.transform[5]) {
-          // Même ligne : ajouter un espace si nécessaire
-          if (text.length > 0 && !text.endsWith(' ') && item.str.length > 0 && !item.str.startsWith(' ')) {
-            text += ' '
+  for (let batchStart = 1; batchStart <= pdf.numPages; batchStart += BATCH) {
+    const batchEnd = Math.min(batchStart + BATCH - 1, pdf.numPages)
+    await Promise.all(
+      Array.from({ length: batchEnd - batchStart + 1 }, async (_, bi) => {
+        const i = batchStart + bi
+        const page = await pdf.getPage(i)
+        const textContent = await page.getTextContent()
+
+        let lastY: number | undefined
+        let text = ''
+        for (const item of textContent.items as any[]) {
+          if ('str' in item) {
+            if (lastY === undefined || lastY === item.transform[5]) {
+              if (text.length > 0 && !text.endsWith(' ') && item.str.length > 0 && !item.str.startsWith(' ')) {
+                text += ' '
+              }
+              text += item.str
+            } else {
+              text += '\n' + item.str
+            }
+            lastY = item.transform[5]
           }
-          text += item.str
-        } else {
-          text += '\n' + item.str
         }
-        lastY = item.transform[5]
-      }
-    }
-    pageTexts.push(text)
+        pageTexts[i - 1] = text
+        completed++
+        if (onProgress) onProgress(completed, pdf.numPages)
+      })
+    )
   }
 
   // Calculer les offsets de pages
