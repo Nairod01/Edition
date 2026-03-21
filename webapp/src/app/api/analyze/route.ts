@@ -144,22 +144,41 @@ export async function POST(request: NextRequest) {
           percent: 30,
         })
 
-        // Analyse toutes les parties en parallèle pour les grands documents
+        // Analyse les parties avec concurrence limitée pour éviter les rate limits API
+        const CONCURRENCY = 3
         let completed = 0
-        const chunkResults = await Promise.all(
-          chunks.map(async (chunk, i) => {
-            const label = chunks.length > 1 ? `partie ${i + 1}/${chunks.length}` : undefined
-            const result = await analyzeChunk(client, chunk, label)
-            completed++
-            const percent = 30 + Math.round((completed / chunks.length) * 55)
-            send({
-              type: 'progress',
-              message: `Analyse linguistique — ${completed}/${chunks.length} parties traitées…`,
-              percent,
-            })
-            return result
+
+        async function runWithConcurrency<T>(
+          items: string[],
+          fn: (item: string, i: number) => Promise<T>
+        ): Promise<T[]> {
+          const results: T[] = new Array(items.length)
+          let nextIndex = 0
+
+          async function worker() {
+            while (nextIndex < items.length) {
+              const i = nextIndex++
+              results[i] = await fn(items[i], i)
+            }
+          }
+
+          const workers = Array.from({ length: Math.min(CONCURRENCY, items.length) }, worker)
+          await Promise.all(workers)
+          return results
+        }
+
+        const chunkResults = await runWithConcurrency(chunks, async (chunk, i) => {
+          const label = chunks.length > 1 ? `partie ${i + 1}/${chunks.length}` : undefined
+          const result = await analyzeChunk(client, chunk, label)
+          completed++
+          const percent = 30 + Math.round((completed / chunks.length) * 55)
+          send({
+            type: 'progress',
+            message: `Analyse linguistique — ${completed}/${chunks.length} parties traitées…`,
+            percent,
           })
-        )
+          return result
+        })
         for (const res of chunkResults) allRaw.push(...res)
 
         send({ type: 'progress', message: 'Finalisation…', percent: 95 })
@@ -227,23 +246,39 @@ async function analyzeChunk(
   text: string,
   chunkLabel?: string
 ): Promise<Omit<Correction, 'id'>[]> {
-  try {
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 8000,
-      temperature: 0, // résultats déterministes — même doc = mêmes corrections
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: buildUserPrompt(text, chunkLabel) }],
-    })
+  const MAX_RETRIES = 2
+  let lastErr: unknown
 
-    const textBlock = response.content.find((b) => b.type === 'text')
-    if (!textBlock || textBlock.type !== 'text') return []
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const response = await client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 8000,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: buildUserPrompt(text, chunkLabel) }],
+      })
 
-    return parseCorrections(textBlock.text)
-  } catch (err) {
-    console.error('Erreur analyse chunk:', err)
-    return []
+      const textBlock = response.content.find((b) => b.type === 'text')
+      if (!textBlock || textBlock.type !== 'text') return []
+
+      return parseCorrections(textBlock.text)
+    } catch (err) {
+      lastErr = err
+      // Rate limit (429) : attendre avant de réessayer
+      const isRateLimit =
+        err instanceof Error &&
+        (err.message.includes('rate') || err.message.includes('429') || err.message.includes('overloaded'))
+      if (isRateLimit && attempt < MAX_RETRIES) {
+        await new Promise((r) => setTimeout(r, (attempt + 1) * 3000))
+        continue
+      }
+      break
+    }
   }
+
+  console.error(`Erreur analyse chunk${chunkLabel ? ` (${chunkLabel})` : ''}:`, lastErr)
+  // Remonter l'erreur pour que l'utilisateur soit informé
+  throw lastErr
 }
 
 function parseCorrections(raw: string): Omit<Correction, 'id'>[] {
