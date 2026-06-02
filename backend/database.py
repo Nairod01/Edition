@@ -5,9 +5,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_db_url = settings.DATABASE_URL
+# Railway uses legacy "postgres://" prefix — SQLAlchemy requires "postgresql://"
+if _db_url.startswith("postgres://"):
+    _db_url = _db_url.replace("postgres://", "postgresql://", 1)
+
+_is_sqlite = _db_url.startswith("sqlite")
 engine = create_engine(
-    settings.DATABASE_URL,
-    connect_args={"check_same_thread": False},
+    _db_url,
+    connect_args={"check_same_thread": False} if _is_sqlite else {},
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
