@@ -1,1 +1,16 @@
 __pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+*.db
+uploads/
+outputs/
+.agents/
+.claude-flow/
+.claude/
+webapp/.claude-flow/
+webapp/next
+webapp/editoria@0.1.0
+skills-lock.json

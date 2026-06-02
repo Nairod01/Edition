@@ -1,461 +1,402 @@
 'use client'
 
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { UploadZone } from '@/components/UploadZone'
-import { AnnotatedText } from '@/components/AnnotatedText'
-import { CorrectionPanel } from '@/components/CorrectionPanel'
-import { ExportButtons } from '@/components/ExportButtons'
-import type { AnalysisResult, StreamEvent } from '@/lib/types'
-import {
-  loadCachedDoc,
-  saveCachedDoc,
-  updateCachedSession,
-  loadLastDocMeta,
-} from '@/lib/docCache'
-import type { LastDocMeta } from '@/lib/docCache'
+import { CostEstimateModal } from '@/components/CostEstimateModal'
+import { ProgressTracker } from '@/components/ProgressTracker'
+import { ResultCard } from '@/components/ResultCard'
+import { HistoryDashboard } from '@/components/HistoryDashboard'
+import { LoginPage } from '@/components/LoginPage'
+import { AdminPanel } from '@/components/AdminPanel'
+import type { DocType, JobState, UploadResponse, Preset, DocumentMetadata, CommentMode } from '@/lib/types'
+import { getStoredUser, clearAuth, apiFetch, getToken } from '@/lib/auth'
+import type { AuthUser } from '@/lib/auth'
 
-type Phase = 'upload' | 'loading' | 'results' | 'error'
-type ViewMode = 'annotated' | 'pdf'
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'
+const POLL_INTERVAL_MS = 2000
 
-const CATEGORY_COLORS: Record<string, string> = {
-  orthographe: 'text-red-600',
-  grammaire: 'text-orange-500',
-  typographie: 'text-blue-600',
-  style: 'text-green-600',
-}
-
-function timeAgo(ts: number): string {
-  const d = Math.floor((Date.now() - ts) / 1000)
-  if (d < 60) return "à l'instant"
-  if (d < 3600) return `il y a ${Math.floor(d / 60)} min`
-  if (d < 86400) return `il y a ${Math.floor(d / 3600)} h`
-  return `il y a ${Math.floor(d / 86400)} j`
-}
-
-function formatTime(ts: number): string {
-  return new Date(ts).toLocaleTimeString('fr', { hour: '2-digit', minute: '2-digit' })
-}
+type Phase = 'upload' | 'estimating' | 'confirming' | 'processing' | 'done' | 'error'
+type ActiveTab = 'analyse' | 'historique' | 'admin'
 
 export default function Home() {
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null)
+  const [authLoading, setAuthLoading] = useState(true)
+
   const [phase, setPhase] = useState<Phase>('upload')
-  const [status, setStatus] = useState('')
-  const [progress, setProgress] = useState(0)
-  const [result, setResult] = useState<AnalysisResult | null>(null)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [errorMsg, setErrorMsg] = useState('')
-  const [filename, setFilename] = useState('')
-  const [doneIds, setDoneIds] = useState<Set<string>>(new Set())
-  const [savedAt, setSavedAt] = useState<number | null>(null)
-  const [pdfUrl, setPdfUrl] = useState<string | null>(null)
-  const [viewMode, setViewMode] = useState<ViewMode>('annotated')
-  const [lastMeta, setLastMeta] = useState<LastDocMeta | null>(null)
-  const [fromCache, setFromCache] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [estimate, setEstimate] = useState<UploadResponse | null>(null)
+  const [job, setJob] = useState<JobState | null>(null)
+  const [startedAt, setStartedAt] = useState<number>(Date.now())
+  const [preset, setPreset] = useState<Preset>('complete')
+  const [metadata, setMetadata] = useState<DocumentMetadata>({ author: '', title: '', characters: '', citation_lang: '', house_rules: '' })
+  const [commentMode, setCommentMode] = useState<CommentMode>('detailed')
+  const [activeTab, setActiveTab] = useState<ActiveTab>('analyse')
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const currentFileRef = useRef<File | null>(null)
-
-  // Lire la dernière session au montage
+  // ── Auth check on mount ───────────────────────────────────────────────────
   useEffect(() => {
-    setLastMeta(loadLastDocMeta())
+    const stored = getStoredUser()
+    if (!stored || !getToken()) {
+      setAuthLoading(false)
+      return
+    }
+    // Validate token with backend and refresh user info
+    apiFetch(`${BACKEND_URL}/api/auth/me`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data) setAuthUser(data)
+        else { clearAuth(); setAuthUser(null) }
+      })
+      .catch(() => { clearAuth(); setAuthUser(null) })
+      .finally(() => setAuthLoading(false))
   }, [])
 
-  // Sauvegarde automatique à chaque coche ou changement de sélection
-  useEffect(() => {
-    if (phase !== 'results' || !currentFileRef.current) return
-    updateCachedSession(currentFileRef.current, Array.from(doneIds), selectedId)
-    setSavedAt(Date.now())
-  }, [doneIds, selectedId, phase])
-
-  const handleToggleDone = useCallback((id: string) => {
-    setDoneIds((prev) => {
-      const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
-      return next
-    })
-  }, [])
-
-  const handleFile = useCallback(async (file: File) => {
-    // ── 1. Vérifier le cache — évite tout appel à Claude ──────────────────
-    const cached = loadCachedDoc(file)
-    if (cached) {
-      currentFileRef.current = file
-      setFilename(file.name)
-      setResult(cached.result)
-      setDoneIds(new Set(cached.doneIds))
-      setSelectedId(cached.selectedId)
-      setSavedAt(cached.savedAt)
-      setFromCache(true)
-
-      if (file.name.toLowerCase().endsWith('.pdf')) {
-        setPdfUrl(URL.createObjectURL(file))
-        setViewMode('pdf')
-      } else {
-        setPdfUrl(null)
-        setViewMode('annotated')
+  // ── Polling ───────────────────────────────────────────────────────────────
+  const startPolling = useCallback((jobId: string) => {
+    if (pollRef.current) clearInterval(pollRef.current)
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await apiFetch(`${BACKEND_URL}/api/jobs/${jobId}`)
+        if (!res.ok) return
+        const data: JobState = await res.json()
+        setJob(data)
+        if (data.status === 'done') {
+          setPhase('done')
+          clearInterval(pollRef.current!)
+          // Refresh user credits after pipeline completes
+          apiFetch(`${BACKEND_URL}/api/auth/me`)
+            .then(r => r.ok ? r.json() : null)
+            .then(d => { if (d) setAuthUser(d) })
+            .catch(() => {})
+        } else if (data.status === 'error') {
+          setPhase('error')
+          clearInterval(pollRef.current!)
+        }
+      } catch {
+        // silently retry
       }
-      setPhase('results')
-      return // ← Pas d'appel API, zéro token
-    }
+    }, POLL_INTERVAL_MS)
+  }, [])
 
-    // ── 2. Pas de cache — analyse complète ────────────────────────────────
-    currentFileRef.current = file
-    setFilename(file.name)
-    setPhase('loading')
-    setProgress(5)
-    setStatus('Préparation…')
-    setResult(null)
-    setSelectedId(null)
-    setDoneIds(new Set())
-    setSavedAt(null)
-    setFromCache(false)
+  useEffect(() => {
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [])
 
-    if (pdfUrl) {
-      URL.revokeObjectURL(pdfUrl)
-      setPdfUrl(null)
-    }
-    setViewMode('annotated')
-
+  // ── Step 1: Upload PDF ────────────────────────────────────────────────────
+  const handleUpload = useCallback(async (file: File, docType: DocType) => {
+    setUploading(true)
+    setPhase('estimating')
     try {
       const formData = new FormData()
       formData.append('file', file)
-      const response = await fetch('/api/analyze', { method: 'POST', body: formData })
-      if (!response.body) throw new Error('Aucune réponse du serveur.')
-
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          try {
-            const event: StreamEvent = JSON.parse(line.slice(6))
-            if (event.type === 'progress') {
-              setStatus(event.message)
-              setProgress(event.percent)
-            } else if (event.type === 'result') {
-              const r = event.data
-
-              // Sauvegarder l'analyse complète pour les prochaines ouvertures
-              saveCachedDoc(file, r, [], null)
-              setSavedAt(Date.now())
-              setLastMeta(loadLastDocMeta())
-
-              if (file.name.toLowerCase().endsWith('.pdf')) {
-                setPdfUrl(URL.createObjectURL(file))
-                setViewMode('pdf')
-              }
-
-              setResult(r)
-              setProgress(100)
-              setPhase('results')
-            } else if (event.type === 'error') {
-              setErrorMsg(event.message)
-              setPhase('error')
-            }
-          } catch {
-            // Ligne partielle
-          }
-        }
+      formData.append('doc_type', docType)
+      const res = await apiFetch(`${BACKEND_URL}/api/upload`, {
+        method: 'POST',
+        body: formData,
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Erreur réseau' }))
+        throw new Error(err.detail || "Erreur lors de l'envoi")
       }
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Erreur réseau inattendue.')
-      setPhase('error')
+      const data: UploadResponse = await res.json()
+      setEstimate(data)
+      setPhase('confirming')
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : "Erreur lors de l'envoi du fichier.")
+      setPhase('upload')
+    } finally {
+      setUploading(false)
     }
-  }, [pdfUrl])
-
-  const handleSelect = useCallback((id: string) => {
-    setSelectedId((prev) => (prev === id ? null : id))
   }, [])
 
-  const reset = useCallback(() => {
-    if (pdfUrl) URL.revokeObjectURL(pdfUrl)
+  // ── Step 2: Confirm and start pipeline ────────────────────────────────────
+  const handleConfirm = useCallback(async (selectedPreset: Preset, selectedMetadata: DocumentMetadata, selectedCommentMode: CommentMode = 'detailed', generatePdf: boolean = true) => {
+    if (!estimate) return
+    setPreset(selectedPreset)
+    setMetadata(selectedMetadata)
+    setCommentMode(selectedCommentMode)
+    setConfirming(true)
+    try {
+      const res = await apiFetch(`${BACKEND_URL}/api/jobs/${estimate.job_id}/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          preset: selectedPreset,
+          comment_mode: selectedCommentMode,
+          generate_pdf: generatePdf,
+          metadata: {
+            author: selectedMetadata.author || null,
+            title: selectedMetadata.title || null,
+            characters: selectedMetadata.characters || null,
+            citation_lang: selectedMetadata.citation_lang || null,
+            house_rules: selectedMetadata.house_rules || null,
+          },
+        }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.detail || 'Impossible de démarrer le traitement.')
+      }
+      setPhase('processing')
+      setStartedAt(Date.now())
+      setJob({
+        id: estimate.job_id,
+        filename: estimate.filename,
+        status: 'pending',
+        progress: 0,
+        progress_label: 'Démarrage…',
+        pages_count: estimate.pages,
+        word_count: estimate.words,
+        estimated_cost_usd: estimate.estimated_cost_usd,
+        corrections_count: 0,
+        corrections_by_category: {},
+        error_message: null,
+        created_at: null,
+        doc_type: estimate.doc_type,
+      })
+      startPolling(estimate.job_id)
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : 'Erreur.')
+    } finally {
+      setConfirming(false)
+    }
+  }, [estimate, startPolling])
+
+  // ── Step 2 alt: Cancel ────────────────────────────────────────────────────
+  const handleCancel = useCallback(async () => {
+    if (estimate) {
+      try {
+        await apiFetch(`${BACKEND_URL}/api/jobs/${estimate.job_id}/cancel`, { method: 'DELETE' })
+      } catch { /* ignore */ }
+    }
+    setEstimate(null)
     setPhase('upload')
-    setResult(null)
-    setSelectedId(null)
-    setProgress(0)
-    setStatus('')
-    setErrorMsg('')
-    setFilename('')
-    setDoneIds(new Set())
-    setSavedAt(null)
-    setPdfUrl(null)
-    setViewMode('annotated')
-    setFromCache(false)
-    currentFileRef.current = null
-    setLastMeta(loadLastDocMeta())
-  }, [pdfUrl])
+  }, [estimate])
+
+  // ── Ouvrir un job depuis l'historique ────────────────────────────────────
+  const handleOpenJob = useCallback(async (jobId: string) => {
+    try {
+      const res = await apiFetch(`${BACKEND_URL}/api/jobs/${jobId}`)
+      if (!res.ok) throw new Error()
+      const data: JobState = await res.json()
+      setJob(data)
+      setPhase('done')
+      setActiveTab('analyse')
+    } catch {
+      alert('Impossible de charger cette analyse.')
+    }
+  }, [])
+
+  // ── Reset ─────────────────────────────────────────────────────────────────
+  const handleReset = useCallback(() => {
+    if (pollRef.current) clearInterval(pollRef.current)
+    setPhase('upload')
+    setEstimate(null)
+    setJob(null)
+    setUploading(false)
+    setConfirming(false)
+    setActiveTab('analyse')
+  }, [])
+
+  // ── Retry (error → confirming modal with same PDF) ─────────────────────
+  const handleRetry = useCallback(async () => {
+    if (!estimate) { handleReset(); return }
+    try {
+      await apiFetch(`${BACKEND_URL}/api/jobs/${estimate.job_id}/reset`, { method: 'POST' })
+    } catch { /* ignore */ }
+    setJob(null)
+    setPhase('confirming')
+  }, [estimate, handleReset])
+
+  // ── Auth loading ──────────────────────────────────────────────────────────
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-stone-50 flex items-center justify-center">
+        <svg className="h-8 w-8 animate-spin text-sage-300" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+      </div>
+    )
+  }
+
+  // ── Not authenticated ─────────────────────────────────────────────────────
+  if (!authUser) {
+    return <LoginPage onLogin={setAuthUser} />
+  }
+
+  // ── Credit indicator ──────────────────────────────────────────────────────
+  const creditPct = authUser.limit_eur && authUser.limit_eur > 0
+    ? Math.min(100, Math.round((authUser.spent_eur / authUser.limit_eur) * 100))
+    : null
+  const creditColor = creditPct === null ? 'text-stone-400'
+    : creditPct >= 90 ? 'text-red-600'
+    : creditPct >= 70 ? 'text-amber-600'
+    : 'text-emerald-600'
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <main className="min-h-screen bg-stone-50">
       {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between sticky top-0 z-20 shadow-sm">
-        <div className="flex items-center gap-3">
-          <span className="text-2xl select-none">✍️</span>
-          <div>
-            <h1 className="font-bold text-gray-900 text-lg leading-none">ÉditorIA</h1>
-            <p className="text-gray-400 text-xs">Correcteur professionnel IA</p>
+      <header className="border-b border-stone-200 bg-white shadow-warm-sm sticky top-0 z-40">
+        <div className="mx-auto flex max-w-4xl items-center gap-3 px-4 py-3">
+          <button
+            onClick={handleReset}
+            className="flex items-center gap-3 group"
+            title="Retour à l'accueil"
+          >
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-sage-600 group-hover:bg-sage-700 transition-all duration-150 shadow-warm-sm group-hover:shadow-warm-md group-hover:-translate-y-px">
+              <svg className="h-5 w-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
+              </svg>
+            </div>
+            <div className="text-left">
+              <h1 className="text-lg font-bold text-stone-900 group-hover:text-sage-700 transition-colors">ÉditorIA</h1>
+              <p className="text-[11px] text-stone-400 leading-none">Correction éditoriale PDF</p>
+            </div>
+          </button>
+
+          <div className="ml-auto flex items-center gap-2 text-xs">
+            {/* Credit pill */}
+            {authUser.limit_eur ? (
+              <span className={`hidden sm:inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 border text-[11px] font-medium tabular-nums ${
+                creditPct !== null && creditPct >= 90
+                  ? 'bg-red-50 border-red-200 text-red-700'
+                  : creditPct !== null && creditPct >= 70
+                  ? 'bg-amber-50 border-amber-200 text-amber-700'
+                  : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+              }`} title="Crédits consommés ce mois">
+                💳 {authUser.credits_remaining_eur?.toFixed(2)}€ restants
+              </span>
+            ) : null}
+
+            {/* User pill */}
+            <span className="hidden sm:inline-flex items-center gap-1.5 rounded-full bg-stone-100 px-2.5 py-1 text-stone-600 border border-stone-200">
+              <span className="h-1.5 w-1.5 rounded-full bg-stone-400" />
+              {authUser.name || authUser.email.split('@')[0]}
+            </span>
+
+            {/* Logout */}
+            <button
+              onClick={() => { clearAuth(); setAuthUser(null) }}
+              className="hidden sm:inline-flex items-center rounded-full bg-stone-100 px-2.5 py-1 text-stone-500 border border-stone-200 hover:bg-red-50 hover:border-red-200 hover:text-red-600 transition-colors"
+              title="Se déconnecter"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+            </button>
+
+            {/* Tabs */}
+            <div className="flex rounded-xl border border-stone-200 p-0.5 bg-stone-100">
+              {([
+                { id: 'analyse', label: 'Analyse' },
+                { id: 'historique', label: 'Historique & Stats' },
+                ...(authUser.role === 'admin' ? [{ id: 'admin', label: 'Admin' }] : []),
+              ] as const).map(({ id, label }) => (
+                <button
+                  key={id}
+                  onClick={() => setActiveTab(id as ActiveTab)}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-150 ${
+                    activeTab === id
+                      ? 'bg-white text-stone-900 shadow-warm-sm'
+                      : 'text-stone-500 hover:text-stone-700'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
-
-        <div className="hidden md:flex items-center gap-4">
-          {[
-            { dot: 'bg-red-400', label: 'Orthographe' },
-            { dot: 'bg-orange-400', label: 'Grammaire' },
-            { dot: 'bg-blue-400', label: 'Typographie' },
-            { dot: 'bg-green-400', label: 'Style' },
-          ].map(({ dot, label }) => (
-            <div key={label} className="flex items-center gap-1.5">
-              <div className={`w-2.5 h-2.5 rounded-full ${dot}`} />
-              <span className="text-xs text-gray-500">{label}</span>
-            </div>
-          ))}
-        </div>
-
-        {phase !== 'upload' && (
-          <button
-            onClick={reset}
-            className="text-sm text-gray-500 hover:text-gray-800 transition-colors border border-gray-200 px-3 py-1.5 rounded-lg hover:border-gray-400"
-          >
-            ← Nouveau document
-          </button>
-        )}
       </header>
 
-      {/* ─── Upload ─── */}
-      {phase === 'upload' && (
-        <main className="flex-1 flex flex-col items-center justify-center p-8 max-w-2xl mx-auto w-full">
-          <div className="text-center mb-8">
-            <h2 className="text-3xl font-bold text-gray-900 mb-3">Corrigez votre document</h2>
-            <p className="text-gray-500 text-base">
-              Déposez un fichier Word ou PDF pour obtenir une analyse complète : orthographe,
-              grammaire, typographie et style.
+      {/* Content */}
+      <div className="mx-auto max-w-4xl px-4 py-10">
+
+        {activeTab === 'historique' && (
+          <HistoryDashboard onOpenJob={handleOpenJob} />
+        )}
+
+        {activeTab === 'admin' && authUser.role === 'admin' && (
+          <AdminPanel />
+        )}
+
+        {activeTab === 'analyse' && phase === 'upload' && (
+          <div className="mb-10 text-center">
+            <div className="inline-flex items-center gap-1.5 rounded-full bg-sage-100 border border-sage-200 px-3 py-1 text-xs font-medium text-sage-700 mb-5">
+              <span className="h-1.5 w-1.5 rounded-full bg-sage-500 animate-pulse" />
+              Propulsé par Claude · IA éditoriale
+            </div>
+            <h2 className="text-3xl font-bold text-stone-900 leading-tight">
+              Correction éditoriale<br className="hidden sm:block" /> exhaustive & intelligente
+            </h2>
+            <p className="mt-4 max-w-xl mx-auto text-stone-500 leading-relaxed">
+              Déposez votre PDF et recevez-le annoté avec{' '}
+              <span className="font-semibold text-stone-700">8 catégories de corrections</span> détectées par IA,
+              de l'orthographe à la vérification des faits.
             </p>
-          </div>
-
-          {/* Carte dernier projet */}
-          {lastMeta && lastMeta.total > 0 && (
-            <div className="w-full mb-5 bg-white border border-blue-100 rounded-xl p-4 shadow-sm">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-xs font-semibold text-blue-600 uppercase tracking-wide mb-1">
-                    Dernier projet
-                  </p>
-                  <p className="text-sm font-medium text-gray-800 truncate">
-                    📄 {lastMeta.filename}
-                  </p>
-                  <p className="text-xs text-gray-400 mt-0.5">
-                    {lastMeta.doneCount}/{lastMeta.total} corrections faites
-                    {' · '}
-                    {timeAgo(lastMeta.savedAt)}
-                  </p>
-                </div>
-                <div className="flex-shrink-0 text-right">
-                  <p className="text-xs text-gray-400 mb-1.5">
-                    Rechargez le même fichier pour reprendre
-                    <br />
-                    <span className="text-green-600 font-medium">sans relancer l&apos;analyse</span>
-                  </p>
-                  <div className="w-28 h-1.5 bg-gray-100 rounded-full overflow-hidden ml-auto">
-                    <div
-                      className="h-full bg-green-400 rounded-full"
-                      style={{
-                        width: `${Math.round((lastMeta.doneCount / lastMeta.total) * 100)}%`,
-                      }}
-                    />
-                  </div>
-                  <p className="text-xs text-gray-400 mt-0.5">
-                    {Math.round((lastMeta.doneCount / lastMeta.total) * 100)}% fait
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="w-full">
-            <UploadZone onFile={handleFile} />
-          </div>
-
-          <div className="mt-8 grid grid-cols-2 md:grid-cols-4 gap-4 w-full">
-            {[
-              { emoji: '🔴', title: 'Orthographe', desc: 'Fautes, homophones, accents' },
-              { emoji: '🟠', title: 'Grammaire', desc: 'Accords, conjugaison, syntaxe' },
-              { emoji: '🔵', title: 'Typographie', desc: 'Ponctuation, guillemets, espaces' },
-              { emoji: '🟢', title: 'Style', desc: 'Répétitions, anglicismes, rythme' },
-            ].map(({ emoji, title, desc }) => (
-              <div
-                key={title}
-                className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm text-center"
-              >
-                <div className="text-2xl mb-2">{emoji}</div>
-                <div className="font-semibold text-gray-800 text-sm mb-1">{title}</div>
-                <div className="text-xs text-gray-400">{desc}</div>
-              </div>
-            ))}
-          </div>
-
-          <p className="mt-6 text-xs text-gray-400 text-center">
-            🔒 Votre document est traité à la volée et n&apos;est jamais stocké sur nos serveurs.
-          </p>
-        </main>
-      )}
-
-      {/* ─── Loading ─── */}
-      {phase === 'loading' && (
-        <main className="flex-1 flex flex-col items-center justify-center p-8">
-          <div className="w-full max-w-md">
-            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 text-center">
-              <div className="relative w-16 h-16 mx-auto mb-6">
-                <div className="absolute inset-0 rounded-full border-4 border-gray-100" />
-                <div className="absolute inset-0 rounded-full border-4 border-t-blue-500 animate-spin" />
-              </div>
-              <h3 className="font-semibold text-gray-900 mb-1">{filename}</h3>
-              <p className="text-gray-500 text-sm mb-6">{status}</p>
-              <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
-                <div
-                  className="h-full rounded-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-500"
-                  style={{ width: `${progress}%` }}
-                />
-              </div>
-              <p className="text-xs text-gray-400 mt-2">{progress}%</p>
-              <p className="text-xs text-gray-400 mt-6">
-                L&apos;analyse peut prendre 30 à 60 secondes selon la longueur du document.
-              </p>
-            </div>
-          </div>
-        </main>
-      )}
-
-      {/* ─── Error ─── */}
-      {phase === 'error' && (
-        <main className="flex-1 flex flex-col items-center justify-center p-8">
-          <div className="bg-white rounded-2xl shadow-sm border border-red-100 p-8 max-w-md w-full text-center">
-            <div className="text-4xl mb-4">⚠️</div>
-            <h3 className="font-semibold text-gray-900 mb-2">Erreur lors de l&apos;analyse</h3>
-            <p className="text-red-600 text-sm mb-6 bg-red-50 p-3 rounded-lg">{errorMsg}</p>
-            <button
-              onClick={reset}
-              className="px-6 py-2 bg-gray-800 text-white rounded-lg text-sm hover:bg-gray-700 transition-colors"
-            >
-              Réessayer
-            </button>
-          </div>
-        </main>
-      )}
-
-      {/* ─── Results ─── */}
-      {phase === 'results' && result && (
-        <main className="flex-1 flex flex-col overflow-hidden">
-          {/* Barre de stats */}
-          <div className="bg-white border-b border-gray-200 px-4 py-2 flex items-center gap-3 flex-wrap text-sm">
-            <span className="text-gray-500 font-medium truncate max-w-[200px]">
-              📄 {filename}
-            </span>
-            <span className="text-gray-400">{result.wordCount.toLocaleString('fr')} mots</span>
-            {(['orthographe', 'grammaire', 'typographie', 'style'] as const).map((cat) => {
-              const count = result.corrections.filter((c) => c.category === cat).length
-              return count > 0 ? (
-                <span key={cat} className={`font-medium capitalize ${CATEGORY_COLORS[cat]}`}>
-                  {count} {cat}
+            <div className="mt-6 flex flex-wrap justify-center gap-2">
+              {[
+                { label: 'A – Orthographe',     color: 'bg-red-50 border-red-200 text-red-700' },
+                { label: 'B – Grammaire',        color: 'bg-orange-50 border-orange-200 text-orange-700' },
+                { label: 'C – Typographie',      color: 'bg-purple-50 border-purple-200 text-purple-700' },
+                { label: 'D – Style',            color: 'bg-blue-50 border-blue-200 text-blue-700' },
+                { label: 'E – Sémantique',       color: 'bg-green-50 border-green-200 text-green-700' },
+                { label: 'F – Uniformisation',   color: 'bg-cyan-50 border-cyan-200 text-cyan-700' },
+                { label: 'G – Renvois',          color: 'bg-pink-50 border-pink-200 text-pink-700' },
+                { label: 'H – Vérif. des faits', color: 'bg-amber-50 border-amber-200 text-amber-700' },
+              ].map(({ label, color }) => (
+                <span key={label} className={`rounded-full border px-3 py-1 text-[11px] font-medium shadow-warm-sm ${color}`}>
+                  {label}
                 </span>
-              ) : null
-            })}
+              ))}
+            </div>
+          </div>
+        )}
 
-            {/* Toggle vue PDF / texte annoté */}
-            {pdfUrl && (
-              <div className="flex items-center gap-1 ml-2 bg-gray-100 rounded-lg p-0.5">
+        {activeTab === 'analyse' && (phase === 'upload' || phase === 'estimating') && (
+          <UploadZone onUpload={handleUpload} loading={uploading} />
+        )}
+
+        {activeTab === 'analyse' && (phase === 'processing' || phase === 'error') && job && (
+          <div className="flex flex-col items-center gap-4">
+            <ProgressTracker job={job} startedAt={startedAt} />
+            {phase === 'error' && (
+              <div className="flex gap-3 w-full max-w-xl">
                 <button
-                  onClick={() => setViewMode('annotated')}
-                  className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
-                    viewMode === 'annotated'
-                      ? 'bg-white shadow-sm text-gray-800 font-medium'
-                      : 'text-gray-500 hover:text-gray-700'
-                  }`}
+                  onClick={handleRetry}
+                  className="flex-1 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2"
                 >
-                  ✏️ Texte annoté
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Réessayer
                 </button>
                 <button
-                  onClick={() => setViewMode('pdf')}
-                  className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
-                    viewMode === 'pdf'
-                      ? 'bg-white shadow-sm text-gray-800 font-medium'
-                      : 'text-gray-500 hover:text-gray-700'
-                  }`}
+                  onClick={handleReset}
+                  className="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
                 >
-                  📄 PDF original
+                  Nouvelle analyse
                 </button>
               </div>
             )}
-
-            {/* Indicateur de sauvegarde */}
-            <span className="ml-auto flex items-center gap-1 text-xs text-gray-400">
-              {fromCache && (
-                <span className="text-blue-500 font-medium mr-2">↩ Restauré du cache</span>
-              )}
-              <SaveIcon />
-              {savedAt ? `Sauvegardé à ${formatTime(savedAt)}` : 'Non sauvegardé'}
-            </span>
           </div>
+        )}
 
-          {/* Split view */}
-          <div className="flex-1 flex overflow-hidden">
-            {/* Panneau gauche : texte annoté OU visionneuse PDF */}
-            <div className="flex-1 overflow-y-auto">
-              {viewMode === 'pdf' && pdfUrl ? (
-                <iframe
-                  src={pdfUrl}
-                  title="PDF original"
-                  className="w-full h-full border-0"
-                  style={{ minHeight: '100%' }}
-                />
-              ) : (
-                <div className="p-6 lg:p-10">
-                  <AnnotatedText
-                    text={result.extractedText}
-                    formattedHtml={result.formattedHtml}
-                    pageOffsets={result.pageOffsets}
-                    corrections={result.corrections}
-                    selectedId={selectedId}
-                    onSelect={handleSelect}
-                  />
-                </div>
-              )}
-            </div>
+        {activeTab === 'analyse' && phase === 'done' && job && (
+          <ResultCard job={job} onNewDocument={handleReset} commentMode={commentMode} />
+        )}
+      </div>
 
-            {/* Panneau corrections */}
-            <aside className="w-80 xl:w-96 border-l border-gray-200 bg-white overflow-y-auto flex-shrink-0">
-              <CorrectionPanel
-                corrections={result.corrections}
-                selectedId={selectedId}
-                onSelect={handleSelect}
-                doneIds={doneIds}
-                onToggleDone={handleToggleDone}
-              />
-            </aside>
-          </div>
-
-          {/* Barre d'export */}
-          <div className="bg-white border-t border-gray-200 px-6 py-3 flex items-center gap-4 flex-wrap">
-            <span className="text-sm text-gray-500 font-medium">Exporter :</span>
-            <ExportButtons result={result} filename={filename} />
-          </div>
-        </main>
+      {phase === 'confirming' && estimate && (
+        <CostEstimateModal
+          estimate={estimate}
+          onConfirm={handleConfirm}
+          onCancel={handleCancel}
+          confirming={confirming}
+        />
       )}
-    </div>
-  )
-}
-
-function SaveIcon() {
-  return (
-    <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <path d="M13 2H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V5l-3-3z" />
-      <path d="M11 2v3H5V2" />
-      <path d="M5 9h6M5 12h4" />
-    </svg>
+    </main>
   )
 }

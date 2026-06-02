@@ -1,12 +1,9 @@
 
 
 const nextConfig = {
-  turbopack: {},
-  webpack: (config) => {
-    // Needed for pdf-parse
-    config.resolve.alias.canvas = false
-    config.resolve.alias.encoding = false
-    return config
+  turbopack: {
+    // Restreindre la racine à webapp/ pour éviter de scanner le .venv Python
+    root: '/Users/dorian/Edition/webapp',
   },
 }
 

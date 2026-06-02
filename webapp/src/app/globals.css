@@ -7,7 +7,42 @@
     scroll-behavior: smooth;
   }
   body {
-    @apply bg-gray-50 text-gray-900;
+    @apply bg-stone-50 text-stone-900;
+    font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  }
+}
+
+/* ── Utilitaires boutons animés ── */
+@layer utilities {
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2
+           bg-sage-600 text-white font-semibold
+           rounded-xl px-5 py-2.5 text-sm
+           shadow-warm-sm
+           transition-all duration-150
+           hover:bg-sage-700 hover:shadow-warm-md hover:-translate-y-px
+           active:scale-[0.98] active:shadow-none
+           disabled:opacity-50 disabled:cursor-not-allowed disabled:translate-y-0 disabled:shadow-none;
+  }
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2
+           bg-white text-stone-700 font-medium
+           border border-stone-300
+           rounded-xl px-5 py-2.5 text-sm
+           shadow-warm-sm
+           transition-all duration-150
+           hover:bg-stone-50 hover:border-stone-400 hover:shadow-warm-md hover:-translate-y-px
+           active:scale-[0.98] active:shadow-none
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-1.5
+           bg-stone-100 text-stone-600 font-medium
+           border border-stone-200
+           rounded-lg px-3 py-1.5 text-xs
+           transition-all duration-150
+           hover:bg-stone-200 hover:text-stone-800 hover:border-stone-300
+           active:scale-[0.97];
   }
 }
 
@@ -16,18 +51,18 @@
   @apply mb-4 leading-relaxed;
 }
 .formatted-doc h1 {
-  @apply text-2xl font-bold mb-4 mt-8 text-gray-900;
+  @apply text-2xl font-bold mb-4 mt-8 text-stone-900;
 }
 .formatted-doc h2 {
-  @apply text-xl font-bold mb-3 mt-6 text-gray-800;
+  @apply text-xl font-bold mb-3 mt-6 text-stone-800;
 }
 .formatted-doc h3 {
-  @apply text-lg font-semibold mb-2 mt-5 text-gray-800;
+  @apply text-lg font-semibold mb-2 mt-5 text-stone-800;
 }
 .formatted-doc h4,
 .formatted-doc h5,
 .formatted-doc h6 {
-  @apply font-semibold mb-2 mt-4 text-gray-700;
+  @apply font-semibold mb-2 mt-4 text-stone-700;
 }
 .formatted-doc em {
   font-style: italic;
@@ -45,29 +80,69 @@
   @apply mb-1;
 }
 .formatted-doc blockquote {
-  @apply border-l-4 border-gray-300 pl-4 italic text-gray-600 my-4;
+  @apply border-l-4 border-stone-300 pl-4 italic text-stone-600 my-4;
 }
 .formatted-doc table {
   @apply border-collapse w-full mb-4 text-sm;
 }
 .formatted-doc th,
 .formatted-doc td {
-  @apply border border-gray-300 px-3 py-1.5 text-left;
+  @apply border border-stone-300 px-3 py-1.5 text-left;
 }
 .formatted-doc th {
-  @apply bg-gray-50 font-semibold;
+  @apply bg-stone-50 font-semibold;
 }
 
-/* Scrollbars personnalisées */
+/* ── Animation flash bbox (correction sélectionnée) ── */
+@keyframes bboxFlash {
+  0%   {
+    border: 3px solid #fbbf24;
+    background: rgba(255, 245, 100, 0.80);
+    border-radius: 3px;
+    box-shadow: 0 0 0 5px rgba(245, 158, 11, 0.45), 0 0 18px 4px rgba(245, 158, 11, 0.35);
+  }
+  25%  {
+    border: 3px solid #f59e0b;
+    background: rgba(245, 158, 11, 0.55);
+    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.30);
+  }
+  65%  {
+    border: 2px solid #f59e0b;
+    background: rgba(245, 158, 11, 0.18);
+    box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.12);
+  }
+  100% {
+    border: 2px solid rgba(245, 158, 11, 0.25);
+    background: transparent;
+    box-shadow: none;
+  }
+}
+.bbox-flash {
+  animation: bboxFlash 2.4s ease-out forwards;
+}
+
+/* ── Animation flash fond lors du pin ── */
+@keyframes pinFlash {
+  0%   { background-color: rgba(251, 191, 36, 0.50); }
+  60%  { background-color: rgba(251, 191, 36, 0.20); }
+  100% { background-color: transparent; }
+}
+.pin-flash {
+  animation: pinFlash 0.8s ease-out forwards;
+}
+
+/* ── Scrollbars personnalisées (warm) ── */
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 5px;
+  height: 5px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  @apply bg-gray-300 rounded-full;
+  background: #c7bdb0;
+  border-radius: 99px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  @apply bg-gray-400;
+  background: #a89b8e;
 }
