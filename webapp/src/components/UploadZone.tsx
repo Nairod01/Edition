@@ -13,7 +13,7 @@ const DOC_TYPE_GROUPS: { label: string; types: DocType[] }[] = [
   { label: 'Littérature', types: ['roman', 'bd_comics', 'jeunesse', 'poesie_theatre'] },
   { label: 'Non-fiction',  types: ['documentaire', 'beaux_arts', 'tourisme', 'cuisine', 'sport'] },
   { label: 'Éducatif',    types: ['manuel_scolaire', 'parascolaire'] },
-  { label: 'Presse',      types: ['magazine', 'revue_presse'] },
+  { label: 'Presse',      types: ['magazine', 'revue_presse', 'entretien'] },
   { label: 'Autre',       types: ['essai', 'autre'] },
 ]
 

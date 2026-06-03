@@ -22,6 +22,7 @@ export type DocType =
   | 'essai'
   | 'magazine'
   | 'revue_presse'
+  | 'entretien'
   | 'autre'
 
 export interface UploadResponse {
@@ -223,6 +224,12 @@ export const DOC_TYPE_META: Record<
     label: 'Revue / Journal',
     description: 'Périodiques, journaux, dépêches',
     icon: '🗞️',
+    group: 'Presse',
+  },
+  entretien: {
+    label: 'Entretien / Interview',
+    description: 'Questions-réponses, registre oral retranscrit',
+    icon: '🎙️',
     group: 'Presse',
   },
   autre: {

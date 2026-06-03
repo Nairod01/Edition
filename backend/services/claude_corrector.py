@@ -157,6 +157,22 @@ DOC_TYPE_CONTEXT: dict[str, str] = {
         "5. Les dates et chiffres liés à l'actualité sont des données factuelles sensibles — utiliser 'À vérifier'.\n"
         "6. Les citations de personnalités publiques entre guillemets sont à reproduire exactement."
     ),
+    "entretien": (
+        "Tu analyses un entretien ou une interview publiée (format journalistique). Règles spécifiques :\n"
+        "1. CORRIGER toutes les fautes d'orthographe, de grammaire et de typographie, y compris dans les "
+        "réponses de l'interviewé — c'est un texte publié, pas une retranscription brute.\n"
+        "2. RESPECTER le registre oral et familier : les tournures orales (\"c'est-à-dire\", \"bon\", "
+        "\"eh bien\", \"vous savez\"), les phrases courtes ou elliptiques et le vocabulaire familier "
+        "délibéré sont des CHOIX ÉDITORIAUX — ne pas les signaler en syntaxe ou style.\n"
+        "3. La structure questions/réponses avec tirets cadratins ou initiales en petites caps est "
+        "conventionnelle — vérifier la cohérence typographique (C), ne pas signaler le format lui-même.\n"
+        "4. Les noms propres cités par l'interviewé (personnes, lieux, œuvres, entreprises) sont à "
+        "vérifier en fact-check (H) — une erreur de mémoire de l'interviewé doit être signalée.\n"
+        "5. Les interruptions, tirets de coupure (—) et points de suspension marquant une hésitation "
+        "ou une parole coupée sont des choix de retranscription — ne pas les signaler.\n"
+        "6. Les notes du journaliste (entre parenthèses ou crochets) sont des ajouts éditoriaux — "
+        "les corriger normalement mais ne pas signaler leur présence comme incohérence."
+    ),
 }
 
 # ── Prompt Passe 1a (A/B/C/D) ─────────────────────────────────────────────────

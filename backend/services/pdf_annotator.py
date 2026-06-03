@@ -302,6 +302,9 @@ _DOC_TYPE_LABELS: dict[str, str] = {
     "manuel_scolaire":"Manuel scolaire",
     "parascolaire":   "Parascolaire",
     "essai":          "Essai / Rapport",
+    "magazine":       "Magazine / Presse",
+    "revue_presse":   "Revue / Journal",
+    "entretien":      "Entretien / Interview",
     "autre":          "Autre document",
 }
 

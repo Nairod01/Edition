@@ -39,7 +39,7 @@ VALID_DOC_TYPES = {
     "roman", "bd_comics", "jeunesse", "poesie_theatre",
     "documentaire", "beaux_arts", "tourisme", "cuisine", "sport",
     "manuel_scolaire", "parascolaire", "essai",
-    "magazine", "revue_presse",
+    "magazine", "revue_presse", "entretien",
     "autre",
 }
 
