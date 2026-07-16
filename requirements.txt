@@ -1,30 +1,33 @@
 # Web framework
-fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
-python-multipart>=0.0.12
+fastapi>=0.115.0,<1.0
+uvicorn[standard]>=0.30.0,<1.0
+python-multipart>=0.0.12,<0.1
 
 # Rate limiting
-slowapi>=0.1.9
+slowapi>=0.1.9,<0.2
 
 # Database
-sqlalchemy>=2.0.0
-psycopg2-binary>=2.9.0
+sqlalchemy>=2.0.0,<3.0
+psycopg2-binary>=2.9.0,<3.0
 
 # Settings
-pydantic-settings>=2.0.0
-python-dotenv>=1.0.0
+pydantic-settings>=2.0.0,<3.0
+python-dotenv>=1.0.0,<2.0
 
 # PDF processing
-PyMuPDF>=1.24.0
+PyMuPDF>=1.24.0,<2.0
 
 # AI / LLM
-anthropic>=0.49.0
+anthropic>=0.49.0,<1.0
 
 # Word export
-python-docx>=1.1.0
+python-docx>=1.1.0,<2.0
 
 # File I/O
 aiofiles>=23.0.0
-python-jose[cryptography]>=3.3.0
-passlib[bcrypt]>=1.7.4
+
+# Auth — passlib 1.7.4 est figé upstream ; bcrypt>=4.1 casse passlib
+# (AttributeError __about__ — incident prod du 2026-06). NE PAS déplafonner.
+python-jose[cryptography]>=3.3.0,<4.0
+passlib[bcrypt]==1.7.4
 bcrypt==4.0.1

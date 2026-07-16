@@ -63,17 +63,24 @@ app.include_router(jobs.router)
 
 @app.on_event("startup")
 def on_startup():
-    init_db()
     _log = logging.getLogger(__name__)
+    if settings.JWT_SECRET == "CHANGE_ME_set_JWT_SECRET_in_env_file":
+        # En production (base non-SQLite = Railway/Postgres), un secret par défaut
+        # permettrait à quiconque de forger des tokens admin → refus de démarrer.
+        if not settings.DATABASE_URL.startswith("sqlite"):
+            raise RuntimeError(
+                "JWT_SECRET non configuré en production. "
+                "Définissez JWT_SECRET (longue chaîne aléatoire) dans les variables d'environnement."
+            )
+        _log.warning(
+            "⚠ JWT_SECRET non configuré — utilisez une valeur secrète dans .env avant la mise en production !"
+        )
+    init_db()
     _log.info(
         "Database initialized. CORS origins: %s | Rate limiting: %s",
         settings.allowed_origins_list(),
         settings.RATE_LIMIT_ENABLED,
     )
-    if settings.JWT_SECRET == "CHANGE_ME_set_JWT_SECRET_in_env_file":
-        _log.warning(
-            "⚠ JWT_SECRET non configuré — utilisez une valeur secrète dans .env avant la mise en production !"
-        )
     _ensure_admin()
 
 

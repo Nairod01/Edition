@@ -25,12 +25,24 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30  # Long-lived — private app with few users
 
 
+def _truncate_bcrypt(password: str) -> str:
+    """
+    bcrypt ignore tout au-delà de 72 bytes ; passlib+bcrypt récents lèvent une
+    erreur au lieu de tronquer (incident prod : création admin échouée en silence).
+    Troncature explicite et cohérente entre hash et verify.
+    """
+    encoded = password.encode("utf-8")
+    if len(encoded) <= 72:
+        return password
+    return encoded[:72].decode("utf-8", errors="ignore")
+
+
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    return pwd_context.verify(_truncate_bcrypt(plain), hashed)
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return pwd_context.hash(_truncate_bcrypt(password))
 
 
 def create_token(user_id: str, secret: str) -> str:
