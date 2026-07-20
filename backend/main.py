@@ -81,7 +81,46 @@ def on_startup():
         settings.allowed_origins_list(),
         settings.RATE_LIMIT_ENABLED,
     )
+    _recover_orphan_jobs()
     _ensure_admin()
+
+
+# Statuts transitoires : un job dans cet état au démarrage est forcément orphelin
+# (son asyncio.Task est mort avec l'ancien process — redéploiement ou crash).
+# "awaiting_confirmation" est exclu : c'est un état stable (attente utilisateur).
+_ORPHAN_STATUSES = ("pending", "extracting", "processing", "annotating")
+
+
+def _recover_orphan_jobs():
+    """
+    Marque en erreur les jobs interrompus par un redémarrage du serveur.
+    Sans cela ils restent bloqués en "processing" pour toujours et l'utilisateur
+    ne voit ni erreur ni résultat. Les crédits ne sont débités qu'à la fin du
+    pipeline, donc aucun remboursement n'est nécessaire.
+    """
+    from backend.database import SessionLocal
+    from backend.models import Job
+    _log = logging.getLogger(__name__)
+    db = SessionLocal()
+    try:
+        orphans = db.query(Job).filter(Job.status.in_(_ORPHAN_STATUSES)).all()
+        for job in orphans:
+            job.status = "error"
+            job.error_message = (
+                "Traitement interrompu par un redémarrage du serveur. "
+                "Relancez l'analyse — aucun crédit n'a été débité."
+            )
+            job.progress_label = "Interrompu (redémarrage serveur)"
+        if orphans:
+            db.commit()
+            _log.warning(
+                "Watchdog : %d job(s) orphelin(s) marqué(s) en erreur : %s",
+                len(orphans), [j.id for j in orphans],
+            )
+    except Exception as exc:
+        _log.warning("Watchdog jobs orphelins : %s (non bloquant)", exc)
+    finally:
+        db.close()
 
 
 def _ensure_admin():

@@ -428,3 +428,35 @@ class TestDownloadEndpoint:
             response = client.get("/api/jobs/test-job-123/download")
 
         assert response.status_code == 404
+
+
+# ── Watchdog jobs orphelins ────────────────────────────────────────────────────
+
+class TestRecoverOrphanJobs:
+
+    def _run_with_orphans(self, jobs):
+        from backend.main import _recover_orphan_jobs
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter.return_value.all.return_value = jobs
+        with patch("backend.database.SessionLocal", return_value=mock_db):
+            _recover_orphan_jobs()
+        return mock_db
+
+    def test_orphan_marked_as_error(self):
+        job = make_mock_job(status="processing")
+        db = self._run_with_orphans([job])
+        assert job.status == "error"
+        assert "redémarrage" in job.error_message
+        db.commit.assert_called_once()
+
+    def test_no_orphans_no_commit(self):
+        db = self._run_with_orphans([])
+        db.commit.assert_not_called()
+
+    def test_awaiting_confirmation_is_stable(self):
+        # L'état "awaiting_confirmation" attend l'utilisateur, pas le serveur —
+        # il ne doit jamais être considéré comme orphelin.
+        from backend.main import _ORPHAN_STATUSES
+        assert "awaiting_confirmation" not in _ORPHAN_STATUSES
+        assert "done" not in _ORPHAN_STATUSES
+        assert "error" not in _ORPHAN_STATUSES
