@@ -46,7 +46,8 @@ _DATE_WITH_MONTH = re.compile(
     rf"\b(?:\d{{1,2}}\s+)?(?:{_MONTHS_FR})\s+\d{{4}}\b",
     re.IGNORECASE,
 )
-_DATE_DD_MM_YYYY = re.compile(r"\b\d{1,2}[/\-.]\d{1,2}[/\-.]\d{4}\b")
+# Backreference \1 : le séparateur doit être cohérent (14/07/1789 oui, 14/07-1789 non)
+_DATE_DD_MM_YYYY = re.compile(r"\b\d{1,2}([/\-.])\d{1,2}\1\d{4}\b")
 # Year alone only when preceded by "en ", "En ", "vers ", "(", etc.
 _DATE_YEAR_ALONE = re.compile(r"(?<=\ben\s)\d{4}\b|(?<=\bvers\s)\d{4}\b|\(\d{4}\)")
 
